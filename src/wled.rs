@@ -102,6 +102,41 @@ impl WledClient {
         Ok(json)
     }
 
+    /// Fetch device configuration (includes timers, hardware, etc).
+    pub async fn get_config(&self, controller: &ControllerInfo) -> Result<serde_json::Value> {
+        let lock = self.get_lock(&controller.id).await;
+        let _guard = lock.lock().await;
+
+        let url = format!("{}/json/cfg", Self::base_url(controller));
+        let resp = self.http.get(&url).send().await.with_context(|| format!("GET {url}"))?;
+        let json = resp.json::<serde_json::Value>().await.with_context(|| format!("parsing {url}"))?;
+        Ok(json)
+    }
+
+    /// POST configuration update to a controller.
+    pub async fn post_config(
+        &self,
+        controller: &ControllerInfo,
+        config: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let lock = self.get_lock(&controller.id).await;
+        let _guard = lock.lock().await;
+
+        let url = format!("{}/json/cfg", Self::base_url(controller));
+        let resp = self
+            .http
+            .post(&url)
+            .json(config)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        let json = resp
+            .json::<serde_json::Value>()
+            .await
+            .with_context(|| format!("parsing response from POST {url}"))?;
+        Ok(json)
+    }
+
     /// Fetch presets.json from a controller.
     pub async fn get_presets(&self, controller: &ControllerInfo) -> Result<serde_json::Value> {
         let lock = self.get_lock(&controller.id).await;

@@ -80,6 +80,36 @@ pub struct SavePresetRequest {
     pub segments: Option<Vec<SegmentInput>>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetTimersRequest {
+    #[schemars(description = "Controller ID (MAC address) from list_controllers")]
+    pub controller_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetTimerRequest {
+    #[schemars(description = "Controller ID (MAC address) from list_controllers")]
+    pub controller_id: String,
+
+    #[schemars(description = "Timer index (0-9). Use get_timers to see current timers and their indices. Indices 8 and 9 are typically sunrise and sunset.")]
+    pub index: u8,
+
+    #[schemars(description = "Enable or disable this timer")]
+    pub enabled: Option<bool>,
+
+    #[schemars(description = "Hour 0-23 for a specific time, or 255 for sunrise/sunset")]
+    pub hour: Option<u8>,
+
+    #[schemars(description = "Minute 0-59 for specific time, or offset -120 to 120 for sunrise/sunset timers")]
+    pub minute: Option<i16>,
+
+    #[schemars(description = "Preset ID to activate when this timer fires (0-250)")]
+    pub preset_id: Option<u16>,
+
+    #[schemars(description = "Weekday bitmask: bit0=Mon, bit1=Tue, ..., bit6=Sun. 127 = every day.")]
+    pub weekdays: Option<u8>,
+}
+
 // --- Tool implementations ---
 
 #[tool_router]
@@ -395,6 +425,174 @@ impl WledServer {
         )]))
     }
 
+    #[tool(description = "Get the time-controlled preset schedule (timers) for a WLED controller. Shows sunrise/sunset triggers and timed preset activations. Each timer has an index, enabled state, time or sunrise/sunset, preset ID, and weekday schedule.")]
+    async fn get_timers(
+        &self,
+        Parameters(req): Parameters<GetTimersRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let controller = self.registry.get(&req.controller_id).await.ok_or_else(|| {
+            ErrorData::invalid_params(
+                format!("Controller '{}' not found. Run list_controllers first.", req.controller_id),
+                None,
+            )
+        })?;
+
+        let config = self.client.get_config(&controller).await.map_err(|e| {
+            ErrorData::internal_error(format!("Failed to fetch config: {e}"), None)
+        })?;
+
+        let timers = config
+            .get("timers")
+            .and_then(|t| t.get("ins"))
+            .and_then(|ins| ins.as_array());
+
+        let timers = match timers {
+            Some(t) => t,
+            None => {
+                return Ok(CallToolResult::success(vec![Content::text(
+                    format!("No timers configured on '{}'.", controller.name),
+                )]));
+            }
+        };
+
+        let mut output = format!("Timers on '{}' ({} slots):\n\n", controller.name, timers.len());
+
+        for (i, timer) in timers.iter().enumerate() {
+            let en = timer.get("en").and_then(|v| v.as_u64()).unwrap_or(0);
+            let hour = timer.get("hour").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+            let min = timer.get("min").and_then(|v| v.as_i64()).unwrap_or(0);
+            let macro_id = timer.get("macro").and_then(|v| v.as_u64()).unwrap_or(0);
+            let dow = timer.get("dow").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+
+            // Skip completely unconfigured timers (disabled, no preset, no time)
+            if en == 0 && macro_id == 0 && hour == 0 && min == 0 {
+                continue;
+            }
+
+            let enabled_str = if en == 1 { "ENABLED" } else { "disabled" };
+
+            let time_str = if hour == 255 {
+                // Determine sunrise vs sunset by index convention
+                // WLED UI: index 8 = sunrise, index 9 = sunset
+                // But in the ins[] array, any entry with hour=255 is sun-based.
+                // We use a heuristic: first hour=255 entry = sunrise, second = sunset
+                let label = format!("Sunrise/Sunset (hour=255)");
+                if min == 0 {
+                    label
+                } else if min > 0 {
+                    format!("{label} +{min}min")
+                } else {
+                    format!("{label} {min}min")
+                }
+            } else {
+                format!("{:02}:{:02}", hour, min)
+            };
+
+            let days = format_weekdays(dow);
+
+            output.push_str(&format!(
+                "  [{i}] {enabled_str} | {time_str} | preset: {macro_id} | days: {days}\n"
+            ));
+        }
+
+        output.push_str("\nNote: hour=255 means sunrise or sunset. WLED determines which based on the timer index (typically index 8=sunrise, 9=sunset in the UI, but in the API array they appear in order).");
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(description = "Update a time-controlled preset timer on a WLED controller. Use this to change which preset activates at sunrise/sunset, enable/disable timers, or set specific times. Only the fields you provide will be changed. Use get_timers first to see current timer indices.")]
+    async fn set_timer(
+        &self,
+        Parameters(req): Parameters<SetTimerRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let controller = self.registry.get(&req.controller_id).await.ok_or_else(|| {
+            ErrorData::invalid_params(
+                format!("Controller '{}' not found. Run list_controllers first.", req.controller_id),
+                None,
+            )
+        })?;
+
+        if req.index > 9 {
+            return Err(ErrorData::invalid_params(
+                "Timer index must be 0-9.".to_string(),
+                None,
+            ));
+        }
+
+        // Read current config
+        let config = self.client.get_config(&controller).await.map_err(|e| {
+            ErrorData::internal_error(format!("Failed to fetch config: {e}"), None)
+        })?;
+
+        let mut timers_ins = config
+            .get("timers")
+            .and_then(|t| t.get("ins"))
+            .and_then(|ins| ins.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        // Extend array if needed
+        while timers_ins.len() <= req.index as usize {
+            timers_ins.push(serde_json::json!({
+                "en": 0, "hour": 0, "min": 0, "macro": 0, "dow": 127
+            }));
+        }
+
+        let entry = &mut timers_ins[req.index as usize];
+        let obj = entry.as_object_mut().ok_or_else(|| {
+            ErrorData::internal_error("Invalid timer entry format".to_string(), None)
+        })?;
+
+        // Apply partial updates
+        if let Some(enabled) = req.enabled {
+            obj.insert("en".to_string(), serde_json::json!(if enabled { 1 } else { 0 }));
+        }
+        if let Some(hour) = req.hour {
+            obj.insert("hour".to_string(), serde_json::json!(hour));
+        }
+        if let Some(minute) = req.minute {
+            obj.insert("min".to_string(), serde_json::json!(minute));
+        }
+        if let Some(preset_id) = req.preset_id {
+            obj.insert("macro".to_string(), serde_json::json!(preset_id));
+        }
+        if let Some(weekdays) = req.weekdays {
+            obj.insert("dow".to_string(), serde_json::json!(weekdays));
+        }
+
+        // POST the full timers array back
+        let update = serde_json::json!({
+            "timers": {
+                "ins": timers_ins
+            }
+        });
+
+        self.client.post_config(&controller, &update).await.map_err(|e| {
+            ErrorData::internal_error(format!("Failed to update timer: {e}"), None)
+        })?;
+
+        // Read back and show the updated timer
+        let new_config = self.client.get_config(&controller).await.map_err(|e| {
+            ErrorData::internal_error(format!("Timer updated but failed to read back: {e}"), None)
+        })?;
+
+        let new_timer = new_config
+            .get("timers")
+            .and_then(|t| t.get("ins"))
+            .and_then(|ins| ins.get(req.index as usize));
+
+        let timer_display = match new_timer {
+            Some(t) => serde_json::to_string_pretty(t).unwrap_or_default(),
+            None => "(unable to read back)".to_string(),
+        };
+
+        let output = format!(
+            "Timer {} updated on '{}'.\n\nCurrent value:\n{}",
+            req.index, controller.name, timer_display
+        );
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
     #[tool(description = "Save the current or provided state as a named preset on a WLED controller. If segments are provided, they will be applied and saved. If no segments are provided, the current state is saved.")]
     async fn save_preset(
         &self,
@@ -469,8 +667,26 @@ impl ServerHandler for WledServer {
                 "WLED MCP Server — control WLED LED controllers on your network. \
                  Start with list_controllers to discover devices, then use get_state, \
                  set_state, list_presets, get_preset, and save_preset to view and modify \
-                 LED colors and patterns."
+                 LED colors and patterns. Use get_timers and set_timer to manage \
+                 sunrise/sunset schedules and time-controlled preset activation."
                     .to_string(),
             )
     }
+}
+
+fn format_weekdays(dow: u8) -> String {
+    if dow == 127 || dow == 255 {
+        return "every day".to_string();
+    }
+    if dow == 0 {
+        return "none".to_string();
+    }
+    let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let active: Vec<&str> = days
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| dow & (1 << i) != 0)
+        .map(|(_, d)| *d)
+        .collect();
+    active.join(", ")
 }
