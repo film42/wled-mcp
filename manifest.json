@@ -1,0 +1,20 @@
+{
+  "manifest_version": "0.2",
+  "name": "wled-mcp",
+  "display_name": "WLED",
+  "version": "1.0.0",
+  "description": "WLED Controller MCP Server",
+  "author": {
+    "name": "film42"
+  },
+  "server": {
+    "type": "binary",
+    "entry_point": "target/release/wled-mcp",
+    "mcp_config": {
+      "command": "${__dirname}/target/release/wled-mcp",
+      "args": [],
+      "env": {}
+    }
+  },
+  "license": "MIT"
+}

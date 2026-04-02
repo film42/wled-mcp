@@ -1,0 +1,8 @@
+src/
+target/.rustc_info.json
+target/CACHEDIR.TAG
+target/debug/
+target/release/.cargo-lock
+target/release/.fingerprint/
+target/release/build/
+target/release/deps/
