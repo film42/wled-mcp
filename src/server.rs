@@ -81,33 +81,33 @@ pub struct SavePresetRequest {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct GetTimersRequest {
+pub struct GetLightScheduleRequest {
     #[schemars(description = "Controller ID (MAC address) from list_controllers")]
     pub controller_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct SetTimerRequest {
+pub struct SetLightScheduleRequest {
     #[schemars(description = "Controller ID (MAC address) from list_controllers")]
     pub controller_id: String,
 
-    #[schemars(description = "Timer index (0-9). Use get_timers to see current timers and their indices. Indices 8 and 9 are typically sunrise and sunset.")]
-    pub index: u8,
+    #[schemars(description = "Enable or disable the sunrise timer. Tip: if the sunrise preset turns lights off, consider leaving this enabled even when disabling sunset — otherwise lights will stay on indefinitely after the last sunset trigger.")]
+    pub sunrise_enabled: Option<bool>,
 
-    #[schemars(description = "Enable or disable this timer")]
-    pub enabled: Option<bool>,
+    #[schemars(description = "Enable or disable the sunset timer (the one that turns lights on with a color theme).")]
+    pub sunset_enabled: Option<bool>,
 
-    #[schemars(description = "Hour 0-23 for a specific time, or 255 for sunrise/sunset")]
-    pub hour: Option<u8>,
+    #[schemars(description = "Preset ID to activate at sunset (turns lights on with a color theme)")]
+    pub sunset_preset_id: Option<u16>,
 
-    #[schemars(description = "Minute 0-59 for specific time, or offset -120 to 120 for sunrise/sunset timers")]
-    pub minute: Option<i16>,
+    #[schemars(description = "Preset ID to activate at sunrise (typically a preset that turns lights off)")]
+    pub sunrise_preset_id: Option<u16>,
 
-    #[schemars(description = "Preset ID to activate when this timer fires (0-250)")]
-    pub preset_id: Option<u16>,
+    #[schemars(description = "Offset in minutes from sunset (-120 to 120). Negative = before sunset, positive = after.")]
+    pub sunset_offset_minutes: Option<i16>,
 
-    #[schemars(description = "Weekday bitmask: bit0=Mon, bit1=Tue, ..., bit6=Sun. 127 = every day.")]
-    pub weekdays: Option<u8>,
+    #[schemars(description = "Offset in minutes from sunrise (-120 to 120). Negative = before sunrise, positive = after.")]
+    pub sunrise_offset_minutes: Option<i16>,
 }
 
 // --- Tool implementations ---
@@ -425,10 +425,10 @@ impl WledServer {
         )]))
     }
 
-    #[tool(description = "Get the time-controlled preset schedule (timers) for a WLED controller. Shows sunrise/sunset triggers and timed preset activations. Each timer has an index, enabled state, time or sunrise/sunset, preset ID, and weekday schedule.")]
-    async fn get_timers(
+    #[tool(description = "Get the sunrise/sunset light schedule for a WLED controller. Shows whether the automatic light program is enabled, which preset activates at sunrise (typically an off preset) and sunset (the color theme), and any time offsets.")]
+    async fn get_light_schedule(
         &self,
-        Parameters(req): Parameters<GetTimersRequest>,
+        Parameters(req): Parameters<GetLightScheduleRequest>,
     ) -> Result<CallToolResult, ErrorData> {
         let controller = self.registry.get(&req.controller_id).await.ok_or_else(|| {
             ErrorData::invalid_params(
@@ -450,60 +450,85 @@ impl WledServer {
             Some(t) => t,
             None => {
                 return Ok(CallToolResult::success(vec![Content::text(
-                    format!("No timers configured on '{}'.", controller.name),
+                    format!("No light schedule configured on '{}'.", controller.name),
                 )]));
             }
         };
 
-        let mut output = format!("Timers on '{}' ({} slots):\n\n", controller.name, timers.len());
+        // Find sunrise and sunset entries (hour=255).
+        // Convention: first hour=255 entry is sunrise, second is sunset.
+        let sun_entries: Vec<(usize, &serde_json::Value)> = timers
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.get("hour").and_then(|v| v.as_u64()) == Some(255))
+            .collect();
 
-        for (i, timer) in timers.iter().enumerate() {
+        if sun_entries.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                format!("No sunrise/sunset schedule configured on '{}'.\n\nUse set_light_schedule to create one.", controller.name),
+            )]));
+        }
+
+        let mut output = format!("Light schedule on '{}':\n\n", controller.name);
+
+        let labels = ["Sunrise", "Sunset"];
+        for (i, (_, timer)) in sun_entries.iter().enumerate() {
+            let label = labels.get(i).unwrap_or(&"Timer");
             let en = timer.get("en").and_then(|v| v.as_u64()).unwrap_or(0);
-            let hour = timer.get("hour").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
             let min = timer.get("min").and_then(|v| v.as_i64()).unwrap_or(0);
             let macro_id = timer.get("macro").and_then(|v| v.as_u64()).unwrap_or(0);
             let dow = timer.get("dow").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
 
-            // Skip completely unconfigured timers (disabled, no preset, no time)
-            if en == 0 && macro_id == 0 && hour == 0 && min == 0 {
-                continue;
-            }
-
-            let enabled_str = if en == 1 { "ENABLED" } else { "disabled" };
-
-            let time_str = if hour == 255 {
-                // Determine sunrise vs sunset by index convention
-                // WLED UI: index 8 = sunrise, index 9 = sunset
-                // But in the ins[] array, any entry with hour=255 is sun-based.
-                // We use a heuristic: first hour=255 entry = sunrise, second = sunset
-                let label = format!("Sunrise/Sunset (hour=255)");
-                if min == 0 {
-                    label
-                } else if min > 0 {
-                    format!("{label} +{min}min")
-                } else {
-                    format!("{label} {min}min")
-                }
+            let status = if en == 1 { "ENABLED" } else { "DISABLED" };
+            let offset = if min == 0 {
+                String::new()
+            } else if min > 0 {
+                format!(" (+{min} min)")
             } else {
-                format!("{:02}:{:02}", hour, min)
+                format!(" ({min} min)")
             };
 
-            let days = format_weekdays(dow);
-
             output.push_str(&format!(
-                "  [{i}] {enabled_str} | {time_str} | preset: {macro_id} | days: {days}\n"
+                "  {label}: {status}, preset {macro_id}{offset}, {}\n",
+                format_weekdays(dow),
             ));
         }
 
-        output.push_str("\nNote: hour=255 means sunrise or sunset. WLED determines which based on the timer index (typically index 8=sunrise, 9=sunset in the UI, but in the API array they appear in order).");
+        // Also show any non-sun timed presets
+        let timed_entries: Vec<(usize, &serde_json::Value)> = timers
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                let hour = t.get("hour").and_then(|v| v.as_u64()).unwrap_or(0);
+                let en = t.get("en").and_then(|v| v.as_u64()).unwrap_or(0);
+                let macro_id = t.get("macro").and_then(|v| v.as_u64()).unwrap_or(0);
+                hour != 255 && (en == 1 || macro_id > 0)
+            })
+            .collect();
+
+        if !timed_entries.is_empty() {
+            output.push_str("\nOther scheduled presets:\n");
+            for (_, timer) in &timed_entries {
+                let en = timer.get("en").and_then(|v| v.as_u64()).unwrap_or(0);
+                let hour = timer.get("hour").and_then(|v| v.as_u64()).unwrap_or(0);
+                let min = timer.get("min").and_then(|v| v.as_i64()).unwrap_or(0);
+                let macro_id = timer.get("macro").and_then(|v| v.as_u64()).unwrap_or(0);
+                let dow = timer.get("dow").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+                let status = if en == 1 { "ENABLED" } else { "DISABLED" };
+                output.push_str(&format!(
+                    "  {:02}:{:02} — {status}, preset {macro_id}, {}\n",
+                    hour, min, format_weekdays(dow),
+                ));
+            }
+        }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(description = "Update a time-controlled preset timer on a WLED controller. Use this to change which preset activates at sunrise/sunset, enable/disable timers, or set specific times. Only the fields you provide will be changed. Use get_timers first to see current timer indices.")]
-    async fn set_timer(
+    #[tool(description = "Set or update the sunrise/sunset light schedule on a WLED controller. Sunrise and sunset can be enabled/disabled independently. Tip: when disabling the sunset timer to stop lights from turning on, consider leaving the sunrise timer enabled if its preset turns lights off — otherwise lights will stay on indefinitely after the last sunset trigger.")]
+    async fn set_light_schedule(
         &self,
-        Parameters(req): Parameters<SetTimerRequest>,
+        Parameters(req): Parameters<SetLightScheduleRequest>,
     ) -> Result<CallToolResult, ErrorData> {
         let controller = self.registry.get(&req.controller_id).await.ok_or_else(|| {
             ErrorData::invalid_params(
@@ -511,13 +536,6 @@ impl WledServer {
                 None,
             )
         })?;
-
-        if req.index > 9 {
-            return Err(ErrorData::invalid_params(
-                "Timer index must be 0-9.".to_string(),
-                None,
-            ));
-        }
 
         // Read current config
         let config = self.client.get_config(&controller).await.map_err(|e| {
@@ -531,33 +549,63 @@ impl WledServer {
             .cloned()
             .unwrap_or_default();
 
-        // Extend array if needed
-        while timers_ins.len() <= req.index as usize {
-            timers_ins.push(serde_json::json!({
-                "en": 0, "hour": 0, "min": 0, "macro": 0, "dow": 127
-            }));
+        // Find existing sunrise/sunset entries, or create them
+        let sun_indices: Vec<usize> = timers_ins
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.get("hour").and_then(|v| v.as_u64()) == Some(255))
+            .map(|(i, _)| i)
+            .collect();
+
+        let (sunrise_idx, sunset_idx) = match sun_indices.len() {
+            0 => {
+                let sr_idx = timers_ins.len();
+                timers_ins.push(serde_json::json!({
+                    "en": 1, "hour": 255, "min": 0, "macro": 0, "dow": 127
+                }));
+                let ss_idx = timers_ins.len();
+                timers_ins.push(serde_json::json!({
+                    "en": 1, "hour": 255, "min": 0, "macro": 0, "dow": 127
+                }));
+                (sr_idx, ss_idx)
+            }
+            1 => {
+                let sr_idx = sun_indices[0];
+                let ss_idx = timers_ins.len();
+                timers_ins.push(serde_json::json!({
+                    "en": 1, "hour": 255, "min": 0, "macro": 0, "dow": 127
+                }));
+                (sr_idx, ss_idx)
+            }
+            _ => (sun_indices[0], sun_indices[1]),
+        };
+
+        // Apply updates to sunrise entry
+        {
+            let sr = timers_ins[sunrise_idx].as_object_mut().unwrap();
+            if let Some(enabled) = req.sunrise_enabled {
+                sr.insert("en".to_string(), serde_json::json!(if enabled { 1 } else { 0 }));
+            }
+            if let Some(preset_id) = req.sunrise_preset_id {
+                sr.insert("macro".to_string(), serde_json::json!(preset_id));
+            }
+            if let Some(offset) = req.sunrise_offset_minutes {
+                sr.insert("min".to_string(), serde_json::json!(offset));
+            }
         }
 
-        let entry = &mut timers_ins[req.index as usize];
-        let obj = entry.as_object_mut().ok_or_else(|| {
-            ErrorData::internal_error("Invalid timer entry format".to_string(), None)
-        })?;
-
-        // Apply partial updates
-        if let Some(enabled) = req.enabled {
-            obj.insert("en".to_string(), serde_json::json!(if enabled { 1 } else { 0 }));
-        }
-        if let Some(hour) = req.hour {
-            obj.insert("hour".to_string(), serde_json::json!(hour));
-        }
-        if let Some(minute) = req.minute {
-            obj.insert("min".to_string(), serde_json::json!(minute));
-        }
-        if let Some(preset_id) = req.preset_id {
-            obj.insert("macro".to_string(), serde_json::json!(preset_id));
-        }
-        if let Some(weekdays) = req.weekdays {
-            obj.insert("dow".to_string(), serde_json::json!(weekdays));
+        // Apply updates to sunset entry
+        {
+            let ss = timers_ins[sunset_idx].as_object_mut().unwrap();
+            if let Some(enabled) = req.sunset_enabled {
+                ss.insert("en".to_string(), serde_json::json!(if enabled { 1 } else { 0 }));
+            }
+            if let Some(preset_id) = req.sunset_preset_id {
+                ss.insert("macro".to_string(), serde_json::json!(preset_id));
+            }
+            if let Some(offset) = req.sunset_offset_minutes {
+                ss.insert("min".to_string(), serde_json::json!(offset));
+            }
         }
 
         // POST the full timers array back
@@ -568,28 +616,49 @@ impl WledServer {
         });
 
         self.client.post_config(&controller, &update).await.map_err(|e| {
-            ErrorData::internal_error(format!("Failed to update timer: {e}"), None)
+            ErrorData::internal_error(format!("Failed to update schedule: {e}"), None)
         })?;
 
-        // Read back and show the updated timer
-        let new_config = self.client.get_config(&controller).await.map_err(|e| {
-            ErrorData::internal_error(format!("Timer updated but failed to read back: {e}"), None)
-        })?;
+        // Brief delay — WLED writes config to flash after POST
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        let new_timer = new_config
-            .get("timers")
-            .and_then(|t| t.get("ins"))
-            .and_then(|ins| ins.get(req.index as usize));
+        // Read back and show result (non-fatal if readback fails)
+        let mut output = format!("Light schedule updated on '{}'.\n\n", controller.name);
 
-        let timer_display = match new_timer {
-            Some(t) => serde_json::to_string_pretty(t).unwrap_or_default(),
-            None => "(unable to read back)".to_string(),
-        };
+        match self.client.get_config(&controller).await {
+            Ok(new_config) => {
+                if let Some(timers) = new_config
+                    .get("timers")
+                    .and_then(|t| t.get("ins"))
+                    .and_then(|ins| ins.as_array())
+                {
+                    let labels = ["Sunrise", "Sunset"];
+                    let indices = [sunrise_idx, sunset_idx];
+                    for (i, &idx) in indices.iter().enumerate() {
+                        if let Some(timer) = timers.get(idx) {
+                            let label = labels[i];
+                            let en = timer.get("en").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let min = timer.get("min").and_then(|v| v.as_i64()).unwrap_or(0);
+                            let macro_id = timer.get("macro").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let status = if en == 1 { "ENABLED" } else { "DISABLED" };
+                            let offset = if min == 0 {
+                                String::new()
+                            } else if min > 0 {
+                                format!(" (+{min} min)")
+                            } else {
+                                format!(" ({min} min)")
+                            };
+                            output.push_str(&format!("  {label}: {status}, preset {macro_id}{offset}\n"));
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                // Readback failed but the update itself succeeded
+                output.push_str("  (unable to read back current schedule, but update was applied)\n");
+            }
+        }
 
-        let output = format!(
-            "Timer {} updated on '{}'.\n\nCurrent value:\n{}",
-            req.index, controller.name, timer_display
-        );
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
