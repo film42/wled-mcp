@@ -89,9 +89,51 @@ fn landing_page(auth_mode: &AuthMode, base: &str) -> String {
 async fn log_request(request: Request<Body>, next: Next) -> Response {
     let method = request.method().clone();
     let uri = request.uri().clone();
+    let is_mcp_post = method == axum::http::Method::POST && uri.path() == "/mcp";
+
+    if !is_mcp_post {
+        let response = next.run(request).await;
+        tracing::info!("{} {} {}", method, uri, response.status().as_u16());
+        return response;
+    }
+
+    // Buffer MCP POST body to log the JSON-RPC method + tool name
+    let (parts, body) = request.into_parts();
+    let bytes = match axum::body::to_bytes(body, 1024 * 1024).await {
+        Ok(b) => b,
+        Err(_) => {
+            let request = Request::from_parts(parts, Body::empty());
+            let response = next.run(request).await;
+            tracing::info!("POST /mcp {}", response.status().as_u16());
+            return response;
+        }
+    };
+
+    let rpc_label = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|v| {
+            let rpc_method = v.get("method")?.as_str()?;
+            if rpc_method == "tools/call" {
+                let tool = v.get("params")?.get("name")?.as_str().unwrap_or("?");
+                let args = v.get("params").and_then(|p| p.get("arguments"));
+                match args {
+                    Some(a) => Some(format!("tools/call {} {}", tool, a)),
+                    None => Some(format!("tools/call {}", tool)),
+                }
+            } else {
+                Some(rpc_method.to_string())
+            }
+        });
+
+    let request = Request::from_parts(parts, Body::from(bytes));
     let response = next.run(request).await;
-    let status = response.status();
-    tracing::info!("{} {} {}", method, uri, status.as_u16());
+    let status = response.status().as_u16();
+
+    match rpc_label {
+        Some(label) => tracing::info!("POST /mcp {} [{}]", status, label),
+        None => tracing::info!("POST /mcp {}", status),
+    }
+
     response
 }
 
