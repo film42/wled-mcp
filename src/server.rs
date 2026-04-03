@@ -3,12 +3,12 @@ use std::sync::Arc;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
-use rmcp::{ServerHandler, schemars, tool, tool_handler, tool_router};
+use rmcp::{schemars, tool, tool_handler, tool_router, ServerHandler};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::discovery::ControllerRegistry;
-use crate::models::{SegmentInput, StateInput, validate_segments};
+use crate::models::{validate_segments, SegmentInput, StateInput};
 use crate::wled::WledClient;
 
 #[derive(Clone)]
@@ -904,13 +904,7 @@ impl WledServer {
 #[tool_handler]
 impl ServerHandler for WledServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
-            ServerCapabilities::builder()
-                .enable_tools()
-                .enable_logging()
-                .build(),
-        )
-        .with_instructions(
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "WLED MCP Server — control WLED LED controllers on your network. \
                  Start with list_controllers to discover devices, then use get_state, \
                  set_state, list_presets, get_preset, and save_preset to view and modify \
