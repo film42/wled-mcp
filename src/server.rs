@@ -142,9 +142,7 @@ pub struct SetLightScheduleRequest {
 
 #[tool_router]
 impl WledServer {
-    pub fn new() -> Self {
-        let client = Arc::new(WledClient::new());
-        let registry = Arc::new(ControllerRegistry::new(client.clone()));
+    pub fn with_shared(registry: Arc<ControllerRegistry>, client: Arc<WledClient>) -> Self {
         Self {
             tool_router: Self::tool_router(),
             registry,
@@ -906,12 +904,21 @@ impl WledServer {
 #[tool_handler]
 impl ServerHandler for WledServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_logging()
+                .build(),
+        )
+        .with_instructions(
             "WLED MCP Server — control WLED LED controllers on your network. \
                  Start with list_controllers to discover devices, then use get_state, \
                  set_state, list_presets, get_preset, and save_preset to view and modify \
                  LED colors and patterns. Use get_timers and set_timer to manage \
-                 sunrise/sunset schedules and time-controlled preset activation."
+                 sunrise/sunset schedules and time-controlled preset activation. \
+                 Always confirm or have permission to save_preset or delete_preset. \
+                 These are destructive operations so never assume the user wants you to \
+                 update these. Always verify unless explicity asked in the prompt."
                 .to_string(),
         )
     }
