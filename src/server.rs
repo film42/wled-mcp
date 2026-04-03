@@ -3,12 +3,12 @@ use std::sync::Arc;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
-use rmcp::{tool, tool_handler, tool_router, schemars, ServerHandler};
+use rmcp::{ServerHandler, schemars, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::discovery::ControllerRegistry;
-use crate::models::{validate_segments, SegmentInput, StateInput};
+use crate::models::{SegmentInput, StateInput, validate_segments};
 use crate::wled::WledClient;
 
 #[derive(Clone)]
@@ -58,7 +58,9 @@ pub struct SetStateRequest {
     #[schemars(description = "Transition time in 100ms units (e.g. 10 = 1 second crossfade)")]
     pub transition: Option<u16>,
 
-    #[schemars(description = "Segment configurations. Each defines LED range, colors, and effects.")]
+    #[schemars(
+        description = "Segment configurations. Each defines LED range, colors, and effects."
+    )]
     pub segments: Option<Vec<SegmentInput>>,
 }
 
@@ -70,6 +72,11 @@ pub struct SavePresetRequest {
     #[schemars(description = "Human-readable name for the preset")]
     pub name: String,
 
+    #[schemars(
+        description = "Preset ID to save to. If omitted, the next available ID is used. If provided, overwrites any existing preset at that ID. Use this to rename or update an existing preset."
+    )]
+    pub preset_id: Option<u16>,
+
     #[schemars(description = "Turn the controller on (true) or off (false)")]
     pub on: Option<bool>,
 
@@ -78,6 +85,15 @@ pub struct SavePresetRequest {
 
     #[schemars(description = "Segment configurations to save")]
     pub segments: Option<Vec<SegmentInput>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeletePresetRequest {
+    #[schemars(description = "Controller ID (MAC address) from list_controllers")]
+    pub controller_id: String,
+
+    #[schemars(description = "Preset ID to delete")]
+    pub preset_id: u16,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -91,22 +107,34 @@ pub struct SetLightScheduleRequest {
     #[schemars(description = "Controller ID (MAC address) from list_controllers")]
     pub controller_id: String,
 
-    #[schemars(description = "Enable or disable the sunrise timer. Tip: if the sunrise preset turns lights off, consider leaving this enabled even when disabling sunset — otherwise lights will stay on indefinitely after the last sunset trigger.")]
+    #[schemars(
+        description = "Enable or disable the sunrise timer. Tip: if the sunrise preset turns lights off, consider leaving this enabled even when disabling sunset — otherwise lights will stay on indefinitely after the last sunset trigger."
+    )]
     pub sunrise_enabled: Option<bool>,
 
-    #[schemars(description = "Enable or disable the sunset timer (the one that turns lights on with a color theme).")]
+    #[schemars(
+        description = "Enable or disable the sunset timer (the one that turns lights on with a color theme)."
+    )]
     pub sunset_enabled: Option<bool>,
 
-    #[schemars(description = "Preset ID to activate at sunset (turns lights on with a color theme)")]
+    #[schemars(
+        description = "Preset ID to activate at sunset (turns lights on with a color theme)"
+    )]
     pub sunset_preset_id: Option<u16>,
 
-    #[schemars(description = "Preset ID to activate at sunrise (typically a preset that turns lights off)")]
+    #[schemars(
+        description = "Preset ID to activate at sunrise (typically a preset that turns lights off)"
+    )]
     pub sunrise_preset_id: Option<u16>,
 
-    #[schemars(description = "Offset in minutes from sunset (-120 to 120). Negative = before sunset, positive = after.")]
+    #[schemars(
+        description = "Offset in minutes from sunset (-120 to 120). Negative = before sunset, positive = after."
+    )]
     pub sunset_offset_minutes: Option<i16>,
 
-    #[schemars(description = "Offset in minutes from sunrise (-120 to 120). Negative = before sunrise, positive = after.")]
+    #[schemars(
+        description = "Offset in minutes from sunrise (-120 to 120). Negative = before sunrise, positive = after."
+    )]
     pub sunrise_offset_minutes: Option<i16>,
 }
 
@@ -124,14 +152,18 @@ impl WledServer {
         }
     }
 
-    #[tool(description = "Discover WLED LED controllers on the local network. Returns a list of controllers with their IDs, names, LED counts, and current state. Call this first to get controller IDs for other tools.")]
+    #[tool(
+        description = "Discover WLED LED controllers on the local network. Returns a list of controllers with their IDs, names, LED counts, and current state. Call this first to get controller IDs for other tools."
+    )]
     async fn list_controllers(
         &self,
         Parameters(_req): Parameters<ListControllersRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        let controllers = self.registry.discover().await.map_err(|e| {
-            ErrorData::internal_error(format!("Discovery failed: {e}"), None)
-        })?;
+        let controllers = self
+            .registry
+            .discover()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("Discovery failed: {e}"), None))?;
 
         if controllers.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -151,14 +183,26 @@ impl WledServer {
                         .iter()
                         .filter(|seg| seg.on)
                         .flat_map(|seg| seg.col.first())
-                        .map(|c| format!("[{}]", c.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")))
+                        .map(|c| {
+                            format!(
+                                "[{}]",
+                                c.iter()
+                                    .map(|v| v.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            )
+                        })
                         .collect();
                     format!(
                         "{}, brightness {}, {} segment(s), colors: {}",
                         if s.on { "ON" } else { "OFF" },
                         s.bri,
                         seg_count,
-                        if colors.is_empty() { "none".to_string() } else { colors.join(", ") },
+                        if colors.is_empty() {
+                            "none".to_string()
+                        } else {
+                            colors.join(", ")
+                        },
                     )
                 }
                 Err(_) => "unable to fetch state".to_string(),
@@ -181,14 +225,19 @@ impl WledServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(description = "List saved presets on a WLED controller with summary info for each. Shows on/off, brightness, transition, mainseg, and a segment overview (id, start, stop, grp, spc, of, on, name). Use get_preset for the full state of a specific preset.")]
+    #[tool(
+        description = "List saved presets on a WLED controller with summary info for each. Shows on/off, brightness, transition, mainseg, and a segment overview (id, start, stop, grp, spc, of, on, name). Use get_preset for the full state of a specific preset."
+    )]
     async fn list_presets(
         &self,
         Parameters(req): Parameters<ListPresetsRequest>,
     ) -> Result<CallToolResult, ErrorData> {
         let controller = self.registry.get(&req.controller_id).await.ok_or_else(|| {
             ErrorData::invalid_params(
-                format!("Controller '{}' not found. Run list_controllers first.", req.controller_id),
+                format!(
+                    "Controller '{}' not found. Run list_controllers first.",
+                    req.controller_id
+                ),
                 None,
             )
         })?;
@@ -224,12 +273,17 @@ impl WledServer {
         entries.sort_by_key(|(id, _)| *id);
 
         if entries.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                format!("No presets saved on '{}'.", controller.name),
-            )]));
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "No presets saved on '{}'.",
+                controller.name
+            ))]));
         }
 
-        let mut output = format!("Presets on '{}' ({} total):\n", controller.name, entries.len());
+        let mut output = format!(
+            "Presets on '{}' ({} total):\n",
+            controller.name,
+            entries.len()
+        );
 
         for (id, preset) in &entries {
             let name = preset
@@ -268,7 +322,11 @@ impl WledServer {
                         continue;
                     }
 
-                    let seg_id = seg_obj.get("id").and_then(|v| v.as_u64()).map(|v| v.to_string()).unwrap_or_default();
+                    let seg_id = seg_obj
+                        .get("id")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
                     let start = seg_obj.get("start").and_then(|v| v.as_u64()).unwrap_or(0);
                     let grp = seg_obj.get("grp").and_then(|v| v.as_u64());
                     let spc = seg_obj.get("spc").and_then(|v| v.as_u64());
@@ -281,13 +339,19 @@ impl WledServer {
                         if seg_on { "on" } else { "off" },
                     );
                     if let Some(grp) = grp {
-                        if grp > 1 { seg_line.push_str(&format!(", grp:{grp}")); }
+                        if grp > 1 {
+                            seg_line.push_str(&format!(", grp:{grp}"));
+                        }
                     }
                     if let Some(spc) = spc {
-                        if spc > 0 { seg_line.push_str(&format!(", spc:{spc}")); }
+                        if spc > 0 {
+                            seg_line.push_str(&format!(", spc:{spc}"));
+                        }
                     }
                     if let Some(of) = of {
-                        if of != 0 { seg_line.push_str(&format!(", of:{of}")); }
+                        if of != 0 {
+                            seg_line.push_str(&format!(", of:{of}"));
+                        }
                     }
                     if !seg_name.is_empty() {
                         seg_line.push_str(&format!(", n:\"{seg_name}\""));
@@ -301,14 +365,19 @@ impl WledServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(description = "Get the full JSON state of a specific preset. Use this to see exactly how a preset is configured — colors, segments, effects — as a reference for creating similar states.")]
+    #[tool(
+        description = "Get the full JSON state of a specific preset. Use this to see exactly how a preset is configured — colors, segments, effects — as a reference for creating similar states."
+    )]
     async fn get_preset(
         &self,
         Parameters(req): Parameters<GetPresetRequest>,
     ) -> Result<CallToolResult, ErrorData> {
         let controller = self.registry.get(&req.controller_id).await.ok_or_else(|| {
             ErrorData::invalid_params(
-                format!("Controller '{}' not found. Run list_controllers first.", req.controller_id),
+                format!(
+                    "Controller '{}' not found. Run list_controllers first.",
+                    req.controller_id
+                ),
                 None,
             )
         })?;
@@ -318,14 +387,15 @@ impl WledServer {
         })?;
 
         let key = req.preset_id.to_string();
-        let preset = presets
-            .get(&key)
-            .ok_or_else(|| {
-                ErrorData::invalid_params(
-                    format!("Preset {} not found on '{}'.", req.preset_id, controller.name),
-                    None,
-                )
-            })?;
+        let preset = presets.get(&key).ok_or_else(|| {
+            ErrorData::invalid_params(
+                format!(
+                    "Preset {} not found on '{}'.",
+                    req.preset_id, controller.name
+                ),
+                None,
+            )
+        })?;
 
         let pretty = serde_json::to_string_pretty(preset).map_err(|e| {
             ErrorData::internal_error(format!("Failed to format preset: {e}"), None)
@@ -343,58 +413,74 @@ impl WledServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(description = "Get the full current JSON state of a WLED controller. Returns the complete state object (including all segment details with colors, effects, grouping, spacing) and device info (LED count, RGBW capability, max segments). This is the exact JSON shape that set_state accepts.")]
+    #[tool(
+        description = "Get the full current JSON state of a WLED controller. Returns the complete state object (including all segment details with colors, effects, grouping, spacing) and device info (LED count, RGBW capability, max segments). This is the exact JSON shape that set_state accepts."
+    )]
     async fn get_state(
         &self,
         Parameters(req): Parameters<GetStateRequest>,
     ) -> Result<CallToolResult, ErrorData> {
         let controller = self.registry.get(&req.controller_id).await.ok_or_else(|| {
             ErrorData::invalid_params(
-                format!("Controller '{}' not found. Run list_controllers first.", req.controller_id),
+                format!(
+                    "Controller '{}' not found. Run list_controllers first.",
+                    req.controller_id
+                ),
                 None,
             )
         })?;
 
-        let full_json = self.client.get_full_json_raw(&controller.ip.to_string(), controller.port).await.map_err(|e| {
-            ErrorData::internal_error(format!("Failed to fetch state: {e}"), None)
-        })?;
+        let full_json = self
+            .client
+            .get_full_json_raw(&controller.ip.to_string(), controller.port)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("Failed to fetch state: {e}"), None))?;
 
         // Return the raw JSON so the LLM sees the exact shape
-        let raw = self.client.get_raw_json(&controller).await.map_err(|e| {
-            ErrorData::internal_error(format!("Failed to fetch state: {e}"), None)
-        })?;
+        let raw =
+            self.client.get_raw_json(&controller).await.map_err(|e| {
+                ErrorData::internal_error(format!("Failed to fetch state: {e}"), None)
+            })?;
 
-        let pretty = serde_json::to_string_pretty(&raw).map_err(|e| {
-            ErrorData::internal_error(format!("Failed to format state: {e}"), None)
-        })?;
+        let pretty = serde_json::to_string_pretty(&raw)
+            .map_err(|e| ErrorData::internal_error(format!("Failed to format state: {e}"), None))?;
 
         let info = &full_json.info;
         let header = format!(
             "Controller: {} (ID: {})\nLEDs: {} ({}), max segments: {}, firmware: {}\n\nFull state:\n",
-            info.name, info.mac, info.leds.count,
+            info.name,
+            info.mac,
+            info.leds.count,
             if info.leds.rgbw { "RGBW" } else { "RGB" },
-            info.leds.maxseg, info.ver,
+            info.leds.maxseg,
+            info.ver,
         );
 
-        Ok(CallToolResult::success(vec![Content::text(format!("{header}{pretty}"))]))
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{header}{pretty}"
+        ))]))
     }
 
-    #[tool(description = "Set the state of a WLED controller. You can change brightness, on/off, and configure segments with colors. Supports partial updates — only the fields you provide will change. For multi-color patterns, create multiple segments covering different LED ranges. Returns the full resulting JSON state.")]
+    #[tool(
+        description = "Set the state of a WLED controller. You can change brightness, on/off, and configure segments with colors. Supports partial updates — only the fields you provide will change. For multi-color patterns, create multiple segments covering different LED ranges. Returns the full resulting JSON state."
+    )]
     async fn set_state(
         &self,
         Parameters(req): Parameters<SetStateRequest>,
     ) -> Result<CallToolResult, ErrorData> {
         let controller = self.registry.get(&req.controller_id).await.ok_or_else(|| {
             ErrorData::invalid_params(
-                format!("Controller '{}' not found. Run list_controllers first.", req.controller_id),
+                format!(
+                    "Controller '{}' not found. Run list_controllers first.",
+                    req.controller_id
+                ),
                 None,
             )
         })?;
 
         if let Some(ref segments) = req.segments {
-            validate_segments(segments, Some(controller.led_count)).map_err(|e| {
-                ErrorData::invalid_params(e, None)
-            })?;
+            validate_segments(segments, Some(controller.led_count))
+                .map_err(|e| ErrorData::invalid_params(e, None))?;
         }
 
         let state = StateInput {
@@ -407,39 +493,45 @@ impl WledServer {
             v: Some(true),
         };
 
-        self.client.post_state(&controller, &state).await.map_err(|e| {
-            ErrorData::internal_error(format!("Failed to set state: {e}"), None)
-        })?;
+        self.client
+            .post_state(&controller, &state)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("Failed to set state: {e}"), None))?;
 
         // Fetch the full resulting state so the LLM sees what happened
         let raw = self.client.get_raw_json(&controller).await.map_err(|e| {
             ErrorData::internal_error(format!("State applied but failed to read back: {e}"), None)
         })?;
 
-        let pretty = serde_json::to_string_pretty(&raw).map_err(|e| {
-            ErrorData::internal_error(format!("Failed to format state: {e}"), None)
-        })?;
+        let pretty = serde_json::to_string_pretty(&raw)
+            .map_err(|e| ErrorData::internal_error(format!("Failed to format state: {e}"), None))?;
 
-        Ok(CallToolResult::success(vec![Content::text(
-            format!("State updated successfully.\n\n{pretty}")
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "State updated successfully.\n\n{pretty}"
+        ))]))
     }
 
-    #[tool(description = "Get the sunrise/sunset light schedule for a WLED controller. Shows whether the automatic light program is enabled, which preset activates at sunrise (typically an off preset) and sunset (the color theme), and any time offsets.")]
+    #[tool(
+        description = "Get the sunrise/sunset light schedule for a WLED controller. Shows whether the automatic light program is enabled, which preset activates at sunrise (typically an off preset) and sunset (the color theme), and any time offsets."
+    )]
     async fn get_light_schedule(
         &self,
         Parameters(req): Parameters<GetLightScheduleRequest>,
     ) -> Result<CallToolResult, ErrorData> {
         let controller = self.registry.get(&req.controller_id).await.ok_or_else(|| {
             ErrorData::invalid_params(
-                format!("Controller '{}' not found. Run list_controllers first.", req.controller_id),
+                format!(
+                    "Controller '{}' not found. Run list_controllers first.",
+                    req.controller_id
+                ),
                 None,
             )
         })?;
 
-        let config = self.client.get_config(&controller).await.map_err(|e| {
-            ErrorData::internal_error(format!("Failed to fetch config: {e}"), None)
-        })?;
+        let config =
+            self.client.get_config(&controller).await.map_err(|e| {
+                ErrorData::internal_error(format!("Failed to fetch config: {e}"), None)
+            })?;
 
         let timers = config
             .get("timers")
@@ -449,9 +541,10 @@ impl WledServer {
         let timers = match timers {
             Some(t) => t,
             None => {
-                return Ok(CallToolResult::success(vec![Content::text(
-                    format!("No light schedule configured on '{}'.", controller.name),
-                )]));
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "No light schedule configured on '{}'.",
+                    controller.name
+                ))]));
             }
         };
 
@@ -464,9 +557,10 @@ impl WledServer {
             .collect();
 
         if sun_entries.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                format!("No sunrise/sunset schedule configured on '{}'.\n\nUse set_light_schedule to create one.", controller.name),
-            )]));
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "No sunrise/sunset schedule configured on '{}'.\n\nUse set_light_schedule to create one.",
+                controller.name
+            ))]));
         }
 
         let mut output = format!("Light schedule on '{}':\n\n", controller.name);
@@ -517,7 +611,9 @@ impl WledServer {
                 let status = if en == 1 { "ENABLED" } else { "DISABLED" };
                 output.push_str(&format!(
                     "  {:02}:{:02} — {status}, preset {macro_id}, {}\n",
-                    hour, min, format_weekdays(dow),
+                    hour,
+                    min,
+                    format_weekdays(dow),
                 ));
             }
         }
@@ -525,22 +621,28 @@ impl WledServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(description = "Set or update the sunrise/sunset light schedule on a WLED controller. Sunrise and sunset can be enabled/disabled independently. Tip: when disabling the sunset timer to stop lights from turning on, consider leaving the sunrise timer enabled if its preset turns lights off — otherwise lights will stay on indefinitely after the last sunset trigger.")]
+    #[tool(
+        description = "Set or update the sunrise/sunset light schedule on a WLED controller. Sunrise and sunset can be enabled/disabled independently. Tip: when disabling the sunset timer to stop lights from turning on, consider leaving the sunrise timer enabled if its preset turns lights off — otherwise lights will stay on indefinitely after the last sunset trigger."
+    )]
     async fn set_light_schedule(
         &self,
         Parameters(req): Parameters<SetLightScheduleRequest>,
     ) -> Result<CallToolResult, ErrorData> {
         let controller = self.registry.get(&req.controller_id).await.ok_or_else(|| {
             ErrorData::invalid_params(
-                format!("Controller '{}' not found. Run list_controllers first.", req.controller_id),
+                format!(
+                    "Controller '{}' not found. Run list_controllers first.",
+                    req.controller_id
+                ),
                 None,
             )
         })?;
 
         // Read current config
-        let config = self.client.get_config(&controller).await.map_err(|e| {
-            ErrorData::internal_error(format!("Failed to fetch config: {e}"), None)
-        })?;
+        let config =
+            self.client.get_config(&controller).await.map_err(|e| {
+                ErrorData::internal_error(format!("Failed to fetch config: {e}"), None)
+            })?;
 
         let mut timers_ins = config
             .get("timers")
@@ -584,7 +686,10 @@ impl WledServer {
         {
             let sr = timers_ins[sunrise_idx].as_object_mut().unwrap();
             if let Some(enabled) = req.sunrise_enabled {
-                sr.insert("en".to_string(), serde_json::json!(if enabled { 1 } else { 0 }));
+                sr.insert(
+                    "en".to_string(),
+                    serde_json::json!(if enabled { 1 } else { 0 }),
+                );
             }
             if let Some(preset_id) = req.sunrise_preset_id {
                 sr.insert("macro".to_string(), serde_json::json!(preset_id));
@@ -598,7 +703,10 @@ impl WledServer {
         {
             let ss = timers_ins[sunset_idx].as_object_mut().unwrap();
             if let Some(enabled) = req.sunset_enabled {
-                ss.insert("en".to_string(), serde_json::json!(if enabled { 1 } else { 0 }));
+                ss.insert(
+                    "en".to_string(),
+                    serde_json::json!(if enabled { 1 } else { 0 }),
+                );
             }
             if let Some(preset_id) = req.sunset_preset_id {
                 ss.insert("macro".to_string(), serde_json::json!(preset_id));
@@ -615,9 +723,12 @@ impl WledServer {
             }
         });
 
-        self.client.post_config(&controller, &update).await.map_err(|e| {
-            ErrorData::internal_error(format!("Failed to update schedule: {e}"), None)
-        })?;
+        self.client
+            .post_config(&controller, &update)
+            .await
+            .map_err(|e| {
+                ErrorData::internal_error(format!("Failed to update schedule: {e}"), None)
+            })?;
 
         // Brief delay — WLED writes config to flash after POST
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -648,63 +759,83 @@ impl WledServer {
                             } else {
                                 format!(" ({min} min)")
                             };
-                            output.push_str(&format!("  {label}: {status}, preset {macro_id}{offset}\n"));
+                            output.push_str(&format!(
+                                "  {label}: {status}, preset {macro_id}{offset}\n"
+                            ));
                         }
                     }
                 }
             }
             Err(_) => {
                 // Readback failed but the update itself succeeded
-                output.push_str("  (unable to read back current schedule, but update was applied)\n");
+                output
+                    .push_str("  (unable to read back current schedule, but update was applied)\n");
             }
         }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(description = "Save the current or provided state as a named preset on a WLED controller. If segments are provided, they will be applied and saved. If no segments are provided, the current state is saved.")]
+    #[tool(
+        description = "Save the current or provided state as a named preset on a WLED controller. If preset_id is provided, overwrites that preset (use this to rename or update existing presets). If preset_id is omitted, allocates the next available ID. If no segments are provided, saves the current live state. You should NEVER assume the user wants you to update automatically. You should always follow up with them before saving. Maybe they just want to see what a change would look like prior to saving."
+    )]
     async fn save_preset(
         &self,
         Parameters(req): Parameters<SavePresetRequest>,
     ) -> Result<CallToolResult, ErrorData> {
         let controller = self.registry.get(&req.controller_id).await.ok_or_else(|| {
             ErrorData::invalid_params(
-                format!("Controller '{}' not found. Run list_controllers first.", req.controller_id),
+                format!(
+                    "Controller '{}' not found. Run list_controllers first.",
+                    req.controller_id
+                ),
                 None,
             )
         })?;
 
         if let Some(ref segments) = req.segments {
-            validate_segments(segments, Some(controller.led_count)).map_err(|e| {
-                ErrorData::invalid_params(e, None)
-            })?;
+            validate_segments(segments, Some(controller.led_count))
+                .map_err(|e| ErrorData::invalid_params(e, None))?;
         }
 
-        // Find next available preset ID
-        let presets = self.client.get_presets(&controller).await.map_err(|e| {
-            ErrorData::internal_error(format!("Failed to fetch presets: {e}"), None)
-        })?;
-
-        let used_ids: std::collections::HashSet<u16> = presets
-            .as_object()
-            .map(|obj| {
-                obj.keys()
-                    .filter_map(|k| k.parse::<u16>().ok())
-                    .filter(|id| {
-                        obj.get(&id.to_string())
-                            .and_then(|v| v.as_object())
-                            .map(|o| !o.is_empty() && o.contains_key("n"))
-                            .unwrap_or(false)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let preset_id = (1u16..=250)
-            .find(|id| !used_ids.contains(id))
-            .ok_or_else(|| {
-                ErrorData::internal_error("No available preset slots (all 250 in use)".to_string(), None)
+        let preset_id = if let Some(id) = req.preset_id {
+            if id == 0 || id > 250 {
+                return Err(ErrorData::invalid_params(
+                    "Preset ID must be between 1 and 250.".to_string(),
+                    None,
+                ));
+            }
+            id
+        } else {
+            // Find next available preset ID
+            let presets = self.client.get_presets(&controller).await.map_err(|e| {
+                ErrorData::internal_error(format!("Failed to fetch presets: {e}"), None)
             })?;
+
+            let used_ids: std::collections::HashSet<u16> = presets
+                .as_object()
+                .map(|obj| {
+                    obj.keys()
+                        .filter_map(|k| k.parse::<u16>().ok())
+                        .filter(|id| {
+                            obj.get(&id.to_string())
+                                .and_then(|v| v.as_object())
+                                .map(|o| !o.is_empty() && o.contains_key("n"))
+                                .unwrap_or(false)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            (1u16..=250)
+                .find(|id| !used_ids.contains(id))
+                .ok_or_else(|| {
+                    ErrorData::internal_error(
+                        "No available preset slots (all 250 in use)".to_string(),
+                        None,
+                    )
+                })?
+        };
 
         let state = StateInput {
             on: req.on,
@@ -716,13 +847,57 @@ impl WledServer {
             v: Some(true),
         };
 
-        self.client.post_state(&controller, &state).await.map_err(|e| {
-            ErrorData::internal_error(format!("Failed to save preset: {e}"), None)
-        })?;
+        self.client
+            .post_state(&controller, &state)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("Failed to save preset: {e}"), None))?;
 
         let output = format!(
             "Preset saved successfully!\n  ID: {}\n  Name: \"{}\"\n  Controller: {}",
             preset_id, req.name, controller.name,
+        );
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        description = "Delete a preset from a WLED controller by its ID. Use list_presets to see available presets and their IDs. You should NEVER assume the user wants you to delete a preset. This is a distructive action and might be impossible to undo. You should always confirm with them before doing so."
+    )]
+    async fn delete_preset(
+        &self,
+        Parameters(req): Parameters<DeletePresetRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let controller = self.registry.get(&req.controller_id).await.ok_or_else(|| {
+            ErrorData::invalid_params(
+                format!(
+                    "Controller '{}' not found. Run list_controllers first.",
+                    req.controller_id
+                ),
+                None,
+            )
+        })?;
+
+        if req.preset_id == 0 || req.preset_id > 250 {
+            return Err(ErrorData::invalid_params(
+                "Preset ID must be between 1 and 250.".to_string(),
+                None,
+            ));
+        }
+
+        // WLED deletes a preset via the pdel field in a state POST
+        let delete_payload = serde_json::json!({
+            "pdel": req.preset_id
+        });
+
+        self.client
+            .post_state_raw(&controller, &delete_payload)
+            .await
+            .map_err(|e| {
+                ErrorData::internal_error(format!("Failed to delete preset: {e}"), None)
+            })?;
+
+        let output = format!(
+            "Preset {} deleted from '{}'.",
+            req.preset_id, controller.name,
         );
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
@@ -731,15 +906,14 @@ impl WledServer {
 #[tool_handler]
 impl ServerHandler for WledServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions(
-                "WLED MCP Server — control WLED LED controllers on your network. \
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+            "WLED MCP Server — control WLED LED controllers on your network. \
                  Start with list_controllers to discover devices, then use get_state, \
                  set_state, list_presets, get_preset, and save_preset to view and modify \
                  LED colors and patterns. Use get_timers and set_timer to manage \
                  sunrise/sunset schedules and time-controlled preset activation."
-                    .to_string(),
-            )
+                .to_string(),
+        )
     }
 }
 

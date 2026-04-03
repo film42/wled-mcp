@@ -15,7 +15,9 @@ pub struct SegmentInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start: Option<u16>,
 
-    #[schemars(description = "LED index after the last LED (exclusive). Set to 0 to delete a segment.")]
+    #[schemars(
+        description = "LED index after the last LED (exclusive). Set to 0 to delete a segment."
+    )]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<u16>,
 
@@ -27,7 +29,9 @@ pub struct SegmentInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bri: Option<u8>,
 
-    #[schemars(description = "Up to 3 colors as arrays. RGB: [R,G,B], RGBW: [R,G,B,W]. Values 0-255.")]
+    #[schemars(
+        description = "Up to 3 colors as arrays. RGB: [R,G,B], RGBW: [R,G,B,W]. Values 0-255."
+    )]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub col: Option<Vec<Vec<u8>>>,
 
@@ -178,7 +182,10 @@ pub fn validate_segments(segments: &[SegmentInput], led_count: Option<u32>) -> R
     for (i, seg) in segments.iter().enumerate() {
         if let Some(ref col) = seg.col {
             if col.len() > 3 {
-                return Err(format!("Segment {i}: at most 3 colors allowed, got {}", col.len()));
+                return Err(format!(
+                    "Segment {i}: at most 3 colors allowed, got {}",
+                    col.len()
+                ));
             }
             for (j, color) in col.iter().enumerate() {
                 if color.len() != 3 && color.len() != 4 {

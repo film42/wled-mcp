@@ -62,8 +62,16 @@ impl WledClient {
         let _guard = lock.lock().await;
 
         let url = format!("{}/json", Self::base_url(controller));
-        let resp = self.http.get(&url).send().await.with_context(|| format!("GET {url}"))?;
-        let json = resp.json::<WledFullJson>().await.with_context(|| format!("parsing {url}"))?;
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        let json = resp
+            .json::<WledFullJson>()
+            .await
+            .with_context(|| format!("parsing {url}"))?;
         Ok(json)
     }
 
@@ -91,14 +99,46 @@ impl WledClient {
         Ok(json)
     }
 
+    /// POST arbitrary JSON to /json/state (for delete, etc).
+    pub async fn post_state_raw(
+        &self,
+        controller: &ControllerInfo,
+        payload: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let lock = self.get_lock(&controller.id).await;
+        let _guard = lock.lock().await;
+
+        let url = format!("{}/json/state", Self::base_url(controller));
+        let resp = self
+            .http
+            .post(&url)
+            .json(payload)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        let json = resp
+            .json::<serde_json::Value>()
+            .await
+            .with_context(|| format!("parsing response from POST {url}"))?;
+        Ok(json)
+    }
+
     /// Fetch full JSON as raw serde_json::Value (for passing through to the LLM).
     pub async fn get_raw_json(&self, controller: &ControllerInfo) -> Result<serde_json::Value> {
         let lock = self.get_lock(&controller.id).await;
         let _guard = lock.lock().await;
 
         let url = format!("{}/json", Self::base_url(controller));
-        let resp = self.http.get(&url).send().await.with_context(|| format!("GET {url}"))?;
-        let json = resp.json::<serde_json::Value>().await.with_context(|| format!("parsing {url}"))?;
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        let json = resp
+            .json::<serde_json::Value>()
+            .await
+            .with_context(|| format!("parsing {url}"))?;
         Ok(json)
     }
 
@@ -108,8 +148,16 @@ impl WledClient {
         let _guard = lock.lock().await;
 
         let url = format!("{}/json/cfg", Self::base_url(controller));
-        let resp = self.http.get(&url).send().await.with_context(|| format!("GET {url}"))?;
-        let json = resp.json::<serde_json::Value>().await.with_context(|| format!("parsing {url}"))?;
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        let json = resp
+            .json::<serde_json::Value>()
+            .await
+            .with_context(|| format!("parsing {url}"))?;
         Ok(json)
     }
 
@@ -143,7 +191,12 @@ impl WledClient {
         let _guard = lock.lock().await;
 
         let url = format!("{}/presets.json", Self::base_url(controller));
-        let resp = self.http.get(&url).send().await.with_context(|| format!("GET {url}"))?;
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
         let json = resp
             .json::<serde_json::Value>()
             .await
