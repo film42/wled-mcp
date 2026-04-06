@@ -2,6 +2,8 @@
 
 MCP server for controlling [WLED](https://kno.wled.ge/) LED controllers. Discovers devices on the local network via mDNS and exposes tools for managing state, presets, effects, and schedules.
 
+[![Demo video](https://img.youtube.com/vi/1tnA_GU2660/maxresdefault.jpg)](https://www.youtube.com/watch?v=1tnA_GU2660)
+
 ## Running
 
 ### Public (no auth)
