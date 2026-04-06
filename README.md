@@ -52,3 +52,11 @@ The server derives its public URL from request headers (`X-Forwarded-Proto`, `X-
 | `/.well-known/oauth-protected-resource` | Protected resource metadata (oauth mode) |
 | `/oauth/authorize` | Authorization endpoint (oauth mode) |
 | `/oauth/token` | Token endpoint (oauth mode) |
+
+## License
+
+[MIT](LICENSE)
+
+---
+
+This project was made possible by [Mozr](https://mozr.com/), where we help businesses design and implement AI-powered integrations and workflows. Have a project in mind? [Let's talk.](https://mozr.com/)
