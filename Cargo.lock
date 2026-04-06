@@ -2618,9 +2618,11 @@ dependencies = [
  "serde_urlencoded",
  "sha2",
  "tokio",
+ "tower",
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

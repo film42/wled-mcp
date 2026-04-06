@@ -165,7 +165,11 @@ impl OAuthStore {
             self.config.client_secret.as_bytes(),
             refresh_payload.as_bytes(),
         );
-        let refresh_token = format!("{}.{}", b64.encode(&refresh_payload), b64.encode(&signature));
+        let refresh_token = format!(
+            "{}.{}",
+            b64.encode(&refresh_payload),
+            b64.encode(&signature)
+        );
 
         serde_json::json!({
             "access_token": access_token,
@@ -322,10 +326,7 @@ pub async fn oauth_authorize(
     }
 
     if !store.is_redirect_allowed(&params.redirect_uri) {
-        warn!(
-            "rejected redirect_uri: {}",
-            params.redirect_uri
-        );
+        warn!("rejected redirect_uri: {}", params.redirect_uri);
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -336,8 +337,7 @@ pub async fn oauth_authorize(
             .into_response();
     }
 
-    let auth_code =
-        store.mint_auth_code(&params.client_id, params.code_challenge.as_deref());
+    let auth_code = store.mint_auth_code(&params.client_id, params.code_challenge.as_deref());
 
     let mut redirect_url = format!("{}?code={}", params.redirect_uri, auth_code);
     if let Some(state) = &params.state {
@@ -428,7 +428,10 @@ async fn handle_authorization_code(store: Arc<OAuthStore>, req: TokenRequest) ->
     }
 
     // Validate client_secret (constant-time)
-    if !constant_time_eq(req.client_secret.as_bytes(), store.config.client_secret.as_bytes()) {
+    if !constant_time_eq(
+        req.client_secret.as_bytes(),
+        store.config.client_secret.as_bytes(),
+    ) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
@@ -488,16 +491,15 @@ async fn handle_authorization_code(store: Arc<OAuthStore>, req: TokenRequest) ->
     }
 
     info!("minted 365-day access token for client_id={}", client_id);
-    (
-        StatusCode::OK,
-        Json(store.token_response(&code_client_id)),
-    )
-        .into_response()
+    (StatusCode::OK, Json(store.token_response(&code_client_id))).into_response()
 }
 
 async fn handle_refresh_token(store: Arc<OAuthStore>, req: TokenRequest) -> Response {
     // Validate client_secret (constant-time)
-    if !constant_time_eq(req.client_secret.as_bytes(), store.config.client_secret.as_bytes()) {
+    if !constant_time_eq(
+        req.client_secret.as_bytes(),
+        store.config.client_secret.as_bytes(),
+    ) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({

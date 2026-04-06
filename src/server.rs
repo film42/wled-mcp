@@ -3,12 +3,12 @@ use std::sync::Arc;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
-use rmcp::{schemars, tool, tool_handler, tool_router, ServerHandler};
+use rmcp::{ServerHandler, schemars, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::discovery::ControllerRegistry;
-use crate::models::{validate_segments, SegmentInput, StateInput};
+use crate::models::{SegmentInput, StateInput, validate_segments};
 use crate::wled::WledClient;
 
 #[derive(Clone)]
