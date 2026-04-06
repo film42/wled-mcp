@@ -163,13 +163,23 @@ async fn main() -> anyhow::Result<()> {
     let auth_mode = match auth_type.as_str() {
         "oauth" => {
             let client_id =
-                std::env::var("CLIENT_ID").expect("CLIENT_ID is required when AUTH_TYPE=oauth");
-            let client_secret = std::env::var("CLIENT_SECRET")
-                .expect("CLIENT_SECRET is required when AUTH_TYPE=oauth");
+                std::env::var("OAUTH_CLIENT_ID").expect("OAUTH_CLIENT_ID is required when AUTH_TYPE=oauth");
+            let client_secret = std::env::var("OAUTH_CLIENT_SECRET")
+                .expect("OAUTH_CLIENT_SECRET is required when AUTH_TYPE=oauth");
+
+            let allowed_redirect_uris: Vec<String> = std::env::var("OAUTH_ALLOWED_REDIRECT_URIS")
+                .unwrap_or_else(|_| {
+                    "https://chatgpt.com/connector/oauth/*,https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback".to_string()
+                })
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
 
             let config = OAuthConfig {
                 client_id: client_id.clone(),
                 client_secret,
+                allowed_redirect_uris,
             };
 
             tracing::info!("auth mode: oauth (client_id={})", client_id);
@@ -240,7 +250,6 @@ async fn main() -> anyhow::Result<()> {
                     get(auth::protected_resource_metadata),
                 )
                 .route("/oauth/token", post(auth::oauth_token))
-                .route("/oauth/register", post(auth::oauth_register))
                 .layer(cors)
                 .with_state(store.clone());
 

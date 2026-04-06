@@ -13,21 +13,25 @@ cargo run
 ### OAuth
 
 ```sh
-AUTH_TYPE=oauth CLIENT_ID=my-client CLIENT_SECRET=my-secret cargo run
+AUTH_TYPE=oauth OAUTH_CLIENT_ID=my-client OAUTH_CLIENT_SECRET=my-secret cargo run
 ```
 
-Claude will go through the OAuth flow automatically -- authorize auto-approves (no user interaction), and tokens last 365 days.
+The OAuth flow is fully stateless — tokens and auth codes are HMAC-signed with the client secret, so there is no server-side session state. You can restart or scale out without invalidating tokens.
+
+Authorization auto-approves (no user interaction). Access and refresh tokens expire after 365 days.
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `AUTH_TYPE` | `public` | `public` or `oauth` |
-| `CLIENT_ID` | -- | Required when `AUTH_TYPE=oauth` |
-| `CLIENT_SECRET` | -- | Required when `AUTH_TYPE=oauth` |
+| `OAUTH_CLIENT_ID` | -- | Required when `AUTH_TYPE=oauth` |
+| `OAUTH_CLIENT_SECRET` | -- | Required when `AUTH_TYPE=oauth` |
+| `OAUTH_ALLOWED_REDIRECT_URIS` | `https://chatgpt.com/connector/oauth/*,https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback` | Comma-separated allowlist of redirect URIs. Patterns ending in `*` are prefix matches. |
 | `BIND_ADDRESS` | `0.0.0.0:3000` | Address to bind |
-| `BASE_URL` | `http://{BIND_ADDRESS}` | Public URL (set this when behind a reverse proxy) |
 | `RUST_LOG` | `wled_mcp=info` | Log level |
+
+The server derives its public URL from request headers (`X-Forwarded-Proto`, `X-Forwarded-Host`, `Host`), so no explicit base URL configuration is needed when running behind a reverse proxy like Caddy or nginx.
 
 ## Endpoints
 
@@ -39,4 +43,3 @@ Claude will go through the OAuth flow automatically -- authorize auto-approves (
 | `/.well-known/oauth-protected-resource` | Protected resource metadata (oauth mode) |
 | `/oauth/authorize` | Authorization endpoint (oauth mode) |
 | `/oauth/token` | Token endpoint (oauth mode) |
-| `/oauth/register` | Dynamic client registration (oauth mode) |

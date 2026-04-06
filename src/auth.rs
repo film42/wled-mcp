@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,15 +9,16 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use base64::Engine;
 use hmac::{Hmac, Mac};
-use rmcp::transport::auth::{AuthorizationMetadata, ClientRegistrationResponse};
+use rmcp::transport::auth::AuthorizationMetadata;
 use serde::Deserialize;
 use sha2::Sha256;
-use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
-use uuid::Uuid;
 
 /// 365 days in seconds.
 const TOKEN_EXPIRES_IN: u64 = 365 * 24 * 60 * 60;
+
+/// Auth codes expire after 10 minutes.
+const AUTH_CODE_EXPIRES_IN: u64 = 10 * 60;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -26,6 +26,7 @@ type HmacSha256 = Hmac<Sha256>;
 pub struct OAuthConfig {
     pub client_id: String,
     pub client_secret: String,
+    pub allowed_redirect_uris: Vec<String>,
 }
 
 /// Derive the base URL from the incoming request headers.
@@ -52,52 +53,61 @@ pub fn base_url_from_headers(headers: &HeaderMap) -> String {
     format!("{}://{}", proto, host)
 }
 
-#[derive(Clone, Debug)]
-pub struct OAuthStore {
-    config: OAuthConfig,
-    /// auth_code -> AuthSession (ephemeral, consumed within seconds)
-    auth_sessions: Arc<RwLock<HashMap<String, AuthSession>>>,
+/// Compute HMAC-SHA256 and return the raw bytes.
+fn hmac_sign(secret: &[u8], message: &[u8]) -> Vec<u8> {
+    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key size");
+    mac.update(message);
+    mac.finalize().into_bytes().to_vec()
+}
+
+/// Constant-time comparison of two byte slices.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 #[derive(Clone, Debug)]
-struct AuthSession {
-    client_id: String,
-    #[allow(dead_code)]
-    redirect_uri: String,
-    #[allow(dead_code)]
-    state: Option<String>,
-    code_challenge: Option<String>,
+pub struct OAuthStore {
+    config: OAuthConfig,
 }
 
 impl OAuthStore {
     pub fn new(config: OAuthConfig) -> Self {
-        Self {
-            config,
-            auth_sessions: Arc::new(RwLock::new(HashMap::new())),
-        }
+        Self { config }
     }
 
-    /// Mint an HMAC-signed token. Format: `base64(client_id:issued_at).base64(signature)`
-    /// The signature is HMAC-SHA256(client_secret, "client_id:issued_at").
+    /// Check if a redirect URI matches the allowlist. Patterns ending in `*` are prefix matches.
+    fn is_redirect_allowed(&self, uri: &str) -> bool {
+        self.config.allowed_redirect_uris.iter().any(|pattern| {
+            if let Some(prefix) = pattern.strip_suffix('*') {
+                uri.starts_with(prefix)
+            } else {
+                uri == pattern
+            }
+        })
+    }
+
+    /// Mint an HMAC-signed token. Format: `base64(payload).base64(signature)`
+    /// The signature is HMAC-SHA256(client_secret, payload).
     /// No storage needed — validated by recomputing the HMAC.
     fn mint_token(&self, client_id: &str) -> (String, u64) {
         let issued_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let token = Self::sign_token(&self.config.client_secret, client_id, issued_at);
+        let token = Self::build_signed_token(&self.config.client_secret, client_id, issued_at);
         (token, issued_at)
     }
 
-    fn sign_token(secret: &str, client_id: &str, issued_at: u64) -> String {
+    fn build_signed_token(secret: &str, client_id: &str, issued_at: u64) -> String {
         let payload = format!("{}:{}", client_id, issued_at);
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-
-        let mut mac =
-            HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key size");
-        mac.update(payload.as_bytes());
-        let signature = mac.finalize().into_bytes();
-
+        let signature = hmac_sign(secret.as_bytes(), payload.as_bytes());
         format!("{}.{}", b64.encode(&payload), b64.encode(&signature))
     }
 
@@ -105,7 +115,7 @@ impl OAuthStore {
     pub fn validate_token(&self, token: &str) -> bool {
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-        let Some((payload_b64, _sig_b64)) = token.split_once('.') else {
+        let Some((payload_b64, sig_b64)) = token.split_once('.') else {
             return false;
         };
 
@@ -138,22 +148,24 @@ impl OAuthStore {
             return false;
         }
 
-        // Verify HMAC
-        let expected = Self::sign_token(&self.config.client_secret, client_id, issued_at);
-        token == expected
+        // Verify HMAC (constant-time)
+        let expected_sig = hmac_sign(self.config.client_secret.as_bytes(), payload.as_bytes());
+        let Ok(actual_sig) = b64.decode(sig_b64) else {
+            return false;
+        };
+        constant_time_eq(&expected_sig, &actual_sig)
     }
 
     /// Mint a token response JSON.
     fn token_response(&self, client_id: &str) -> serde_json::Value {
         let (access_token, issued_at) = self.mint_token(client_id);
-        // Refresh token is just another signed token with a "refresh:" prefix in the payload
         let refresh_payload = format!("refresh:{}:{}", client_id, issued_at);
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        let mut mac = HmacSha256::new_from_slice(self.config.client_secret.as_bytes())
-            .expect("HMAC accepts any key size");
-        mac.update(refresh_payload.as_bytes());
-        let sig = mac.finalize().into_bytes();
-        let refresh_token = format!("{}.{}", b64.encode(&refresh_payload), b64.encode(&sig));
+        let signature = hmac_sign(
+            self.config.client_secret.as_bytes(),
+            refresh_payload.as_bytes(),
+        );
+        let refresh_token = format!("{}.{}", b64.encode(&refresh_payload), b64.encode(&signature));
 
         serde_json::json!({
             "access_token": access_token,
@@ -163,11 +175,11 @@ impl OAuthStore {
         })
     }
 
-    /// Validate a refresh token. Returns true if signature is valid (no expiry check on refresh).
+    /// Validate a refresh token. Returns true if signature is valid and not expired.
     fn validate_refresh_token(&self, token: &str) -> bool {
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-        let Some((payload_b64, _sig_b64)) = token.split_once('.') else {
+        let Some((payload_b64, sig_b64)) = token.split_once('.') else {
             return false;
         };
 
@@ -191,20 +203,87 @@ impl OAuthStore {
             return false;
         };
 
+        // Check expiry (365 days)
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        if now - issued_at > TOKEN_EXPIRES_IN {
+            return false;
+        }
+
         // Check client_id
         if client_id != self.config.client_id {
             return false;
         }
 
-        // Verify HMAC
-        let refresh_payload = format!("refresh:{}:{}", client_id, issued_at);
-        let mut mac = HmacSha256::new_from_slice(self.config.client_secret.as_bytes())
-            .expect("HMAC accepts any key size");
-        mac.update(refresh_payload.as_bytes());
-        let sig = mac.finalize().into_bytes();
-        let expected = format!("{}.{}", b64.encode(&refresh_payload), b64.encode(&sig));
+        // Verify HMAC (constant-time)
+        let expected_sig = hmac_sign(self.config.client_secret.as_bytes(), payload.as_bytes());
+        let Ok(actual_sig) = b64.decode(sig_b64) else {
+            return false;
+        };
+        constant_time_eq(&expected_sig, &actual_sig)
+    }
 
-        token == expected
+    /// Mint a stateless auth code. Format: `base64(payload).base64(signature)`
+    /// Payload: `authcode:client_id:code_challenge:issued_at`
+    /// (code_challenge is "none" if PKCE was not requested)
+    fn mint_auth_code(&self, client_id: &str, code_challenge: Option<&str>) -> String {
+        let issued_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let challenge = code_challenge.unwrap_or("none");
+        let payload = format!("authcode:{}:{}:{}", client_id, challenge, issued_at);
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let signature = hmac_sign(self.config.client_secret.as_bytes(), payload.as_bytes());
+        format!("{}.{}", b64.encode(&payload), b64.encode(&signature))
+    }
+
+    /// Validate and decode a stateless auth code. Returns (client_id, code_challenge) on success.
+    fn validate_auth_code(&self, code: &str) -> Option<(String, Option<String>)> {
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        let (payload_b64, sig_b64) = code.split_once('.')?;
+
+        let payload_bytes = b64.decode(payload_b64).ok()?;
+        let payload = String::from_utf8(payload_bytes).ok()?;
+
+        // Parse authcode:client_id:code_challenge:issued_at
+        let rest = payload.strip_prefix("authcode:")?;
+        let (rest, issued_at_str) = rest.rsplit_once(':')?;
+        let issued_at = issued_at_str.parse::<u64>().ok()?;
+
+        // Check expiry
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        if now - issued_at > AUTH_CODE_EXPIRES_IN {
+            return None;
+        }
+
+        let (client_id, challenge) = rest.rsplit_once(':')?;
+
+        // Check client_id
+        if client_id != self.config.client_id {
+            return None;
+        }
+
+        // Verify HMAC (constant-time)
+        let expected_sig = hmac_sign(self.config.client_secret.as_bytes(), payload.as_bytes());
+        let actual_sig = b64.decode(sig_b64).ok()?;
+        if !constant_time_eq(&expected_sig, &actual_sig) {
+            return None;
+        }
+
+        let code_challenge = if challenge == "none" {
+            None
+        } else {
+            Some(challenge.to_string())
+        };
+
+        Some((client_id.to_string(), code_challenge))
     }
 }
 
@@ -224,7 +303,7 @@ pub struct AuthorizeQuery {
     pub code_challenge_method: Option<String>,
 }
 
-/// GET /oauth/authorize — auto-approves and redirects with code
+/// GET /oauth/authorize — auto-approves and redirects with a stateless signed code
 pub async fn oauth_authorize(
     Query(params): Query<AuthorizeQuery>,
     State(store): State<Arc<OAuthStore>>,
@@ -242,20 +321,23 @@ pub async fn oauth_authorize(
             .into_response();
     }
 
-    let auth_code = format!("code-{}", Uuid::new_v4());
+    if !store.is_redirect_allowed(&params.redirect_uri) {
+        warn!(
+            "rejected redirect_uri: {}",
+            params.redirect_uri
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_request",
+                "error_description": "redirect_uri not in allowlist"
+            })),
+        )
+            .into_response();
+    }
 
-    let session = AuthSession {
-        client_id: params.client_id,
-        redirect_uri: params.redirect_uri.clone(),
-        state: params.state.clone(),
-        code_challenge: params.code_challenge,
-    };
-
-    store
-        .auth_sessions
-        .write()
-        .await
-        .insert(auth_code.clone(), session);
+    let auth_code =
+        store.mint_auth_code(&params.client_id, params.code_challenge.as_deref());
 
     let mut redirect_url = format!("{}?code={}", params.redirect_uri, auth_code);
     if let Some(state) = &params.state {
@@ -345,8 +427,8 @@ async fn handle_authorization_code(store: Arc<OAuthStore>, req: TokenRequest) ->
             .into_response();
     }
 
-    // Validate client_secret
-    if req.client_secret != store.config.client_secret {
+    // Validate client_secret (constant-time)
+    if !constant_time_eq(req.client_secret.as_bytes(), store.config.client_secret.as_bytes()) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
@@ -357,10 +439,9 @@ async fn handle_authorization_code(store: Arc<OAuthStore>, req: TokenRequest) ->
             .into_response();
     }
 
-    // Look up and consume the auth code
-    let session = store.auth_sessions.write().await.remove(&req.code);
-    let session = match session {
-        Some(s) => s,
+    // Validate the stateless auth code
+    let (code_client_id, code_challenge) = match store.validate_auth_code(&req.code) {
+        Some(result) => result,
         None => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -374,7 +455,7 @@ async fn handle_authorization_code(store: Arc<OAuthStore>, req: TokenRequest) ->
     };
 
     // Validate PKCE if a code_challenge was provided
-    if let Some(challenge) = &session.code_challenge {
+    if let Some(challenge) = &code_challenge {
         match &req.code_verifier {
             Some(verifier) => {
                 use sha2::Digest;
@@ -409,14 +490,14 @@ async fn handle_authorization_code(store: Arc<OAuthStore>, req: TokenRequest) ->
     info!("minted 365-day access token for client_id={}", client_id);
     (
         StatusCode::OK,
-        Json(store.token_response(&session.client_id)),
+        Json(store.token_response(&code_client_id)),
     )
         .into_response()
 }
 
 async fn handle_refresh_token(store: Arc<OAuthStore>, req: TokenRequest) -> Response {
-    // Validate client_secret
-    if req.client_secret != store.config.client_secret {
+    // Validate client_secret (constant-time)
+    if !constant_time_eq(req.client_secret.as_bytes(), store.config.client_secret.as_bytes()) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
@@ -453,50 +534,12 @@ pub async fn oauth_metadata(headers: HeaderMap) -> impl IntoResponse {
     metadata.issuer = Some(base.clone());
     metadata.authorization_endpoint = format!("{}/oauth/authorize", base);
     metadata.token_endpoint = format!("{}/oauth/token", base);
-    metadata.registration_endpoint = Some(format!("{}/oauth/register", base));
+
     metadata.scopes_supported = Some(vec!["mcp".to_string()]);
     metadata.response_types_supported = Some(vec!["code".to_string()]);
     metadata.code_challenge_methods_supported = Some(vec!["S256".to_string()]);
 
     (StatusCode::OK, Json(metadata))
-}
-
-/// Dynamic client registration — returns the pre-configured client credentials.
-/// Claude needs this endpoint to exist.
-#[derive(Debug, Deserialize)]
-pub struct RegistrationRequest {
-    pub client_name: Option<String>,
-    pub redirect_uris: Vec<String>,
-}
-
-pub async fn oauth_register(
-    State(store): State<Arc<OAuthStore>>,
-    Json(req): Json<RegistrationRequest>,
-) -> Response {
-    debug!("oauth_register: {:?}", req);
-
-    if req.redirect_uris.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "invalid_request",
-                "error_description": "at least one redirect_uri required"
-            })),
-        )
-            .into_response();
-    }
-
-    // Return the pre-configured client credentials so Claude can use them
-    let mut response =
-        ClientRegistrationResponse::new(store.config.client_id.clone(), req.redirect_uris);
-    response.client_secret = Some(store.config.client_secret.clone());
-    response.client_name = req.client_name;
-
-    info!(
-        "registered client with pre-configured client_id={}",
-        store.config.client_id
-    );
-    (StatusCode::CREATED, Json(response)).into_response()
 }
 
 /// Bearer token validation middleware for the /mcp route
