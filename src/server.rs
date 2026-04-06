@@ -775,7 +775,7 @@ impl WledServer {
     }
 
     #[tool(
-        description = "Save the current or provided state as a named preset on a WLED controller. If preset_id is provided, overwrites that preset (use this to rename or update existing presets). If preset_id is omitted, allocates the next available ID. If no segments are provided, saves the current live state. You should NEVER assume the user wants you to update automatically. You should always follow up with them before saving. Maybe they just want to see what a change would look like prior to saving."
+        description = "Save the current or provided state as a named preset on a WLED controller. If preset_id is provided, overwrites that preset (use this to rename or update existing presets). If preset_id is omitted, allocates the next available ID. If no segments are provided, saves the current live state. You should NEVER assume the user wants you to update automatically. You should always follow up with them before saving. Maybe they just want to see what a change would look like prior to saving. You should explicitly set \"on\": \"true\" when setting a preset so that when controller will turn the lights on."
     )]
     async fn save_preset(
         &self,
