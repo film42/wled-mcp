@@ -595,3 +595,260 @@ pub async fn protected_resource_metadata(headers: HeaderMap) -> impl IntoRespons
         })),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> OAuthConfig {
+        OAuthConfig {
+            client_id: "test-client".to_string(),
+            client_secret: "test-secret".to_string(),
+            allowed_redirect_uris: vec![
+                "https://chatgpt.com/connector/oauth/*".to_string(),
+                "https://claude.ai/api/mcp/auth_callback".to_string(),
+                "https://claude.com/api/mcp/auth_callback".to_string(),
+            ],
+        }
+    }
+
+    fn test_store() -> OAuthStore {
+        OAuthStore::new(test_config())
+    }
+
+    // -- redirect URI allowlist --
+
+    #[test]
+    fn redirect_exact_match() {
+        let store = test_store();
+        assert!(store.is_redirect_allowed("https://claude.ai/api/mcp/auth_callback"));
+        assert!(store.is_redirect_allowed("https://claude.com/api/mcp/auth_callback"));
+    }
+
+    #[test]
+    fn redirect_wildcard_match() {
+        let store = test_store();
+        assert!(store.is_redirect_allowed("https://chatgpt.com/connector/oauth/abc123"));
+        assert!(store.is_redirect_allowed("https://chatgpt.com/connector/oauth/anything/here"));
+    }
+
+    #[test]
+    fn redirect_rejects_unknown() {
+        let store = test_store();
+        assert!(!store.is_redirect_allowed("https://evil.com/callback"));
+        assert!(!store.is_redirect_allowed("https://claude.ai/api/mcp/other"));
+        assert!(!store.is_redirect_allowed("http://claude.ai/api/mcp/auth_callback"));
+    }
+
+    #[test]
+    fn redirect_empty_allowlist_rejects_all() {
+        let store = OAuthStore::new(OAuthConfig {
+            client_id: "test".to_string(),
+            client_secret: "test".to_string(),
+            allowed_redirect_uris: vec![],
+        });
+        assert!(!store.is_redirect_allowed("https://claude.ai/api/mcp/auth_callback"));
+    }
+
+    // -- access token minting and validation --
+
+    #[test]
+    fn mint_and_validate_token() {
+        let store = test_store();
+        let (token, _) = store.mint_token("test-client");
+        assert!(store.validate_token(&token));
+    }
+
+    #[test]
+    fn token_wrong_secret_rejected() {
+        let store = test_store();
+        let (token, _) = store.mint_token("test-client");
+
+        let other_store = OAuthStore::new(OAuthConfig {
+            client_secret: "wrong-secret".to_string(),
+            ..test_config()
+        });
+        assert!(!other_store.validate_token(&token));
+    }
+
+    #[test]
+    fn token_wrong_client_id_rejected() {
+        let store = test_store();
+        let (token, _) = store.mint_token("test-client");
+
+        let other_store = OAuthStore::new(OAuthConfig {
+            client_id: "other-client".to_string(),
+            ..test_config()
+        });
+        assert!(!other_store.validate_token(&token));
+    }
+
+    #[test]
+    fn token_expired_rejected() {
+        let store = test_store();
+        let expired_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - TOKEN_EXPIRES_IN
+            - 1;
+        let token = OAuthStore::build_signed_token("test-secret", "test-client", expired_at);
+        assert!(!store.validate_token(&token));
+    }
+
+    #[test]
+    fn token_garbage_rejected() {
+        let store = test_store();
+        assert!(!store.validate_token("garbage"));
+        assert!(!store.validate_token("not.valid"));
+        assert!(!store.validate_token(""));
+    }
+
+    #[test]
+    fn token_tampered_signature_rejected() {
+        let store = test_store();
+        let (token, _) = store.mint_token("test-client");
+        let tampered = format!("{}X", token);
+        assert!(!store.validate_token(&tampered));
+    }
+
+    // -- refresh token minting and validation --
+
+    #[test]
+    fn refresh_token_roundtrip() {
+        let store = test_store();
+        let response = store.token_response("test-client");
+        let refresh = response["refresh_token"].as_str().unwrap();
+        assert!(store.validate_refresh_token(refresh));
+    }
+
+    #[test]
+    fn refresh_token_wrong_secret_rejected() {
+        let store = test_store();
+        let response = store.token_response("test-client");
+        let refresh = response["refresh_token"].as_str().unwrap();
+
+        let other_store = OAuthStore::new(OAuthConfig {
+            client_secret: "wrong-secret".to_string(),
+            ..test_config()
+        });
+        assert!(!other_store.validate_refresh_token(refresh));
+    }
+
+    #[test]
+    fn refresh_token_expired_rejected() {
+        let store = test_store();
+        let expired_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - TOKEN_EXPIRES_IN
+            - 1;
+
+        let payload = format!("refresh:test-client:{}", expired_at);
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let sig = hmac_sign("test-secret".as_bytes(), payload.as_bytes());
+        let token = format!("{}.{}", b64.encode(&payload), b64.encode(&sig));
+
+        assert!(!store.validate_refresh_token(&token));
+    }
+
+    #[test]
+    fn access_token_not_valid_as_refresh() {
+        let store = test_store();
+        let (access, _) = store.mint_token("test-client");
+        assert!(!store.validate_refresh_token(&access));
+    }
+
+    #[test]
+    fn refresh_token_not_valid_as_access() {
+        let store = test_store();
+        let response = store.token_response("test-client");
+        let refresh = response["refresh_token"].as_str().unwrap();
+        assert!(!store.validate_token(refresh));
+    }
+
+    // -- auth code minting and validation --
+
+    #[test]
+    fn auth_code_roundtrip() {
+        let store = test_store();
+        let code = store.mint_auth_code("test-client", None);
+        let result = store.validate_auth_code(&code);
+        assert!(result.is_some());
+        let (client_id, challenge) = result.unwrap();
+        assert_eq!(client_id, "test-client");
+        assert!(challenge.is_none());
+    }
+
+    #[test]
+    fn auth_code_with_pkce_challenge() {
+        let store = test_store();
+        let code = store.mint_auth_code("test-client", Some("challenge-value"));
+        let result = store.validate_auth_code(&code).unwrap();
+        assert_eq!(result.0, "test-client");
+        assert_eq!(result.1.as_deref(), Some("challenge-value"));
+    }
+
+    #[test]
+    fn auth_code_expired_rejected() {
+        let store = test_store();
+        let expired_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - AUTH_CODE_EXPIRES_IN
+            - 1;
+
+        let payload = format!("authcode:test-client:none:{}", expired_at);
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let sig = hmac_sign("test-secret".as_bytes(), payload.as_bytes());
+        let code = format!("{}.{}", b64.encode(&payload), b64.encode(&sig));
+
+        assert!(store.validate_auth_code(&code).is_none());
+    }
+
+    #[test]
+    fn auth_code_wrong_secret_rejected() {
+        let store = test_store();
+        let other_store = OAuthStore::new(OAuthConfig {
+            client_secret: "other-secret".to_string(),
+            ..test_config()
+        });
+        let code = other_store.mint_auth_code("test-client", None);
+        assert!(store.validate_auth_code(&code).is_none());
+    }
+
+    // -- base_url_from_headers --
+
+    #[test]
+    fn base_url_forwarded_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+        headers.insert("x-forwarded-host", "example.com".parse().unwrap());
+        assert_eq!(base_url_from_headers(&headers), "https://example.com");
+    }
+
+    #[test]
+    fn base_url_host_header_fallback() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "myserver:3000".parse().unwrap());
+        assert_eq!(base_url_from_headers(&headers), "http://myserver:3000");
+    }
+
+    #[test]
+    fn base_url_no_headers() {
+        let headers = HeaderMap::new();
+        assert_eq!(base_url_from_headers(&headers), "http://localhost");
+    }
+
+    // -- constant_time_eq --
+
+    #[test]
+    fn constant_time_eq_works() {
+        assert!(constant_time_eq(b"hello", b"hello"));
+        assert!(!constant_time_eq(b"hello", b"world"));
+        assert!(!constant_time_eq(b"hello", b"hell"));
+        assert!(constant_time_eq(b"", b""));
+    }
+}
