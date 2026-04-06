@@ -9,7 +9,9 @@ use axum::routing::{get, post};
 use axum::{Router, middleware};
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::auth::{self, OAuthConfig, OAuthStore};
+#[cfg(test)]
+use crate::auth::OAuthConfig;
+use crate::auth::{self, OAuthStore};
 
 #[derive(Clone, Debug)]
 pub enum AuthMode {
@@ -80,6 +82,7 @@ pub fn build(auth_mode: AuthMode, mcp_router: Router) -> Router {
 }
 
 /// Build an OAuth-mode router from config. Convenience for tests and simple setups.
+#[cfg(test)]
 pub fn build_oauth(config: OAuthConfig) -> Router {
     let store = Arc::new(OAuthStore::new(config));
     build(AuthMode::OAuth(store), Router::new())

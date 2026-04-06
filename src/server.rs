@@ -336,20 +336,20 @@ impl WledServer {
                         "    seg {seg_id}: {start}-{stop}, {}",
                         if seg_on { "on" } else { "off" },
                     );
-                    if let Some(grp) = grp {
-                        if grp > 1 {
-                            seg_line.push_str(&format!(", grp:{grp}"));
-                        }
+                    if let Some(grp) = grp
+                        && grp > 1
+                    {
+                        seg_line.push_str(&format!(", grp:{grp}"));
                     }
-                    if let Some(spc) = spc {
-                        if spc > 0 {
-                            seg_line.push_str(&format!(", spc:{spc}"));
-                        }
+                    if let Some(spc) = spc
+                        && spc > 0
+                    {
+                        seg_line.push_str(&format!(", spc:{spc}"));
                     }
-                    if let Some(of) = of {
-                        if of != 0 {
-                            seg_line.push_str(&format!(", of:{of}"));
-                        }
+                    if let Some(of) = of
+                        && of != 0
+                    {
+                        seg_line.push_str(&format!(", of:{of}"));
                     }
                     if !seg_name.is_empty() {
                         seg_line.push_str(&format!(", n:\"{seg_name}\""));

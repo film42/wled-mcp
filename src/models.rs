@@ -197,22 +197,22 @@ pub fn validate_segments(segments: &[SegmentInput], led_count: Option<u32>) -> R
             }
         }
 
-        if let (Some(start), Some(stop)) = (seg.start, seg.stop) {
-            if stop > 0 && stop <= start {
-                return Err(format!(
-                    "Segment {i}: stop ({stop}) must be greater than start ({start})"
-                ));
-            }
+        if let (Some(start), Some(stop)) = (seg.start, seg.stop)
+            && stop > 0
+            && stop <= start
+        {
+            return Err(format!(
+                "Segment {i}: stop ({stop}) must be greater than start ({start})"
+            ));
         }
 
-        if let Some(stop) = seg.stop {
-            if let Some(count) = led_count {
-                if stop > count as u16 {
-                    return Err(format!(
-                        "Segment {i}: stop ({stop}) exceeds LED count ({count})"
-                    ));
-                }
-            }
+        if let Some(stop) = seg.stop
+            && let Some(count) = led_count
+            && stop > count as u16
+        {
+            return Err(format!(
+                "Segment {i}: stop ({stop}) exceeds LED count ({count})"
+            ));
         }
     }
     Ok(())
