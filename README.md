@@ -2,6 +2,8 @@
 
 MCP server for controlling [WLED](https://kno.wled.ge/) LED controllers. Discovers devices on the local network via mDNS and exposes tools for managing state, presets, effects, and schedules.
 
+**[Watch the demo](https://www.youtube.com/watch?v=1tnA_GU2660)** — click the image below to see it in action.
+
 [![Demo video](https://img.youtube.com/vi/1tnA_GU2660/maxresdefault.jpg)](https://www.youtube.com/watch?v=1tnA_GU2660)
 
 ## Running
@@ -24,14 +26,19 @@ Authorization auto-approves (no user interaction). Access and refresh tokens exp
 
 ## Environment Variables
 
-| Variable | Default | Description |
+| Variable | Description | Default |
 |---|---|---|
-| `AUTH_TYPE` | `public` | `public` or `oauth` |
-| `OAUTH_CLIENT_ID` | -- | Required when `AUTH_TYPE=oauth` |
-| `OAUTH_CLIENT_SECRET` | -- | Required when `AUTH_TYPE=oauth` |
-| `OAUTH_ALLOWED_REDIRECT_URIS` | `https://chatgpt.com/connector/oauth/*,https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback` | Comma-separated allowlist of redirect URIs. Patterns ending in `*` are prefix matches. |
-| `BIND_ADDRESS` | `0.0.0.0:3000` | Address to bind |
-| `RUST_LOG` | `wled_mcp=info` | Log level |
+| `AUTH_TYPE` | `public` or `oauth` | `public` |
+| `OAUTH_CLIENT_ID` | Required when `AUTH_TYPE=oauth` | -- |
+| `OAUTH_CLIENT_SECRET` | Required when `AUTH_TYPE=oauth` | -- |
+| `OAUTH_ALLOWED_REDIRECT_URIS` | Comma-separated allowlist of redirect URIs. Patterns ending in `*` are prefix matches. | See below |
+| `BIND_ADDRESS` | Address to bind | `0.0.0.0:3000` |
+| `RUST_LOG` | Log level | `wled_mcp=info` |
+
+Default `OAUTH_ALLOWED_REDIRECT_URIS`:
+```
+https://chatgpt.com/connector/oauth/*,https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback
+```
 
 The server derives its public URL from request headers (`X-Forwarded-Proto`, `X-Forwarded-Host`, `Host`), so no explicit base URL configuration is needed when running behind a reverse proxy like Caddy or nginx.
 
