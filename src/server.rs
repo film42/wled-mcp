@@ -460,7 +460,7 @@ impl WledServer {
     }
 
     #[tool(
-        description = "Set the state of a WLED controller. You can change brightness, on/off, and configure segments with colors. Supports partial updates — only the fields you provide will change. For multi-color patterns, create multiple segments covering different LED ranges. Returns the full resulting JSON state."
+        description = "Set the state of a WLED controller. You can change brightness, on/off, and configure segments with colors. Supports partial updates — only the fields you provide will change. For multi-color patterns, create multiple segments covering different LED ranges. Returns the full resulting JSON state. CRITICAL: WLED merges segment data — it never replaces. Every active segment MUST include: start, stop, grp (default 1), spc (default 0), of (default 0), on, and col. Omitted fields keep their previous values, causing bleed-through from the prior state. After the last active segment, append at least 10 {\"stop\": 0} entries to delete any leftover segments from the previous configuration."
     )]
     async fn set_state(
         &self,
@@ -776,7 +776,7 @@ impl WledServer {
     }
 
     #[tool(
-        description = "Save the current or provided state as a named preset on a WLED controller. If preset_id is provided, overwrites that preset (use this to rename or update existing presets). If preset_id is omitted, allocates the next available ID. If no segments are provided, saves the current live state. You should NEVER assume the user wants you to update automatically. You should always follow up with them before saving. Maybe they just want to see what a change would look like prior to saving. You should explicitly set \"on\": \"true\" when setting a preset so that when controller will turn the lights on."
+        description = "Save the current or provided state as a named preset on a WLED controller. If preset_id is provided, overwrites that preset (use this to rename or update existing presets). If preset_id is omitted, allocates the next available ID. If no segments are provided, saves the current live state. You should NEVER assume the user wants you to update automatically. You should always follow up with them before saving. Maybe they just want to see what a change would look like prior to saving. You should explicitly set \"on\": \"true\" when setting a preset so that when controller will turn the lights on. CRITICAL: WLED merges segment data — it never replaces. Every active segment MUST include: start, stop, grp (default 1), spc (default 0), of (default 0), on, and col. Omitted fields keep their previous values, causing bleed-through from the prior state. After the last active segment, append at least 10 {\"stop\": 0} entries to delete any leftover segments from the previous configuration."
     )]
     async fn save_preset(
         &self,
