@@ -84,6 +84,9 @@ pub struct StateInput {
     /// Request full state in response
     #[serde(skip_serializing_if = "Option::is_none")]
     pub v: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub o: Option<bool>,
 }
 
 // --- Response types (parsed from WLED GET responses) ---
