@@ -489,6 +489,7 @@ impl WledServer {
             psave: None,
             n: None,
             v: Some(true),
+            o: None,
         };
 
         self.client
@@ -843,6 +844,7 @@ impl WledServer {
             psave: Some(preset_id),
             n: Some(req.name.clone()),
             v: Some(true),
+            o: Some(true),
         };
 
         self.client
