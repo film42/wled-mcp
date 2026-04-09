@@ -514,7 +514,10 @@ impl WledServer {
 
         let key = item.preset_id.to_string();
         let preset = presets.get(&key).ok_or_else(|| {
-            format!("Preset {} not found on '{}'.", item.preset_id, controller.name)
+            format!(
+                "Preset {} not found on '{}'.",
+                item.preset_id, controller.name
+            )
         })?;
 
         let pretty = serde_json::to_string_pretty(preset)
@@ -672,10 +675,7 @@ impl WledServer {
         Ok(Self::format_batch(results))
     }
 
-    async fn get_light_schedule_one(
-        &self,
-        item: GetLightScheduleItem,
-    ) -> Result<String, String> {
+    async fn get_light_schedule_one(&self, item: GetLightScheduleItem) -> Result<String, String> {
         let controller = self
             .registry
             .get(&item.controller_id)
@@ -701,7 +701,10 @@ impl WledServer {
         let timers = match timers {
             Some(t) => t,
             None => {
-                return Ok(format!("No light schedule configured on '{}'.", controller.name));
+                return Ok(format!(
+                    "No light schedule configured on '{}'.",
+                    controller.name
+                ));
             }
         };
 
@@ -795,10 +798,7 @@ impl WledServer {
         Ok(Self::format_batch(results))
     }
 
-    async fn set_light_schedule_one(
-        &self,
-        item: SetLightScheduleItem,
-    ) -> Result<String, String> {
+    async fn set_light_schedule_one(&self, item: SetLightScheduleItem) -> Result<String, String> {
         let controller = self
             .registry
             .get(&item.controller_id)

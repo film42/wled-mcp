@@ -9,9 +9,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
+use rmcp::transport::StreamableHttpServerConfig;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::tower::StreamableHttpService;
-use rmcp::transport::StreamableHttpServerConfig;
 
 use crate::auth::{OAuthConfig, OAuthStore};
 use crate::router::AuthMode;
