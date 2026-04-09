@@ -6,3 +6,4 @@ target/release/.cargo-lock
 target/release/.fingerprint/
 target/release/build/
 target/release/deps/
+target/doc/

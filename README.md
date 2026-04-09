@@ -32,7 +32,7 @@ Authorization auto-approves (no user interaction). Access and refresh tokens exp
 | `OAUTH_CLIENT_ID` | Required when `AUTH_TYPE=oauth` | -- |
 | `OAUTH_CLIENT_SECRET` | Required when `AUTH_TYPE=oauth` | -- |
 | `OAUTH_ALLOWED_REDIRECT_URIS` | Comma-separated allowlist of redirect URIs. Patterns ending in `*` are prefix matches. | See below |
-| `BIND_ADDRESS` | Address to bind | `0.0.0.0:3000` |
+| `BIND_ADDRESS` | Address to bind | `0.0.0.0:8080` |
 | `RUST_LOG` | Log level | `wled_mcp=info` |
 
 Default `OAUTH_ALLOWED_REDIRECT_URIS`:

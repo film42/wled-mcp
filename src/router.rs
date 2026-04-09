@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{HeaderMap, Request};
+use axum::http::{HeaderMap, HeaderName, Request};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -33,10 +33,19 @@ pub fn build(auth_mode: AuthMode, mcp_router: Router) -> Router {
         auth_mode: auth_mode.clone(),
     };
 
+    // Expose the MCP session headers so browser-based clients (e.g. MCP
+    // Inspector) can read them from the initialize response and echo them
+    // back on subsequent requests. Without this, the browser hides the
+    // headers from JS and the server 422s on notifications/initialized.
+    // See modelcontextprotocol/inspector#905.
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_headers(Any)
+        .expose_headers([
+            HeaderName::from_static("mcp-session-id"),
+            HeaderName::from_static("mcp-protocol-version"),
+        ]);
 
     let app = match auth_mode {
         AuthMode::Public => Router::new()

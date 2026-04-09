@@ -9,9 +9,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
-use rmcp::transport::StreamableHttpServerConfig;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::tower::StreamableHttpService;
+use rmcp::transport::StreamableHttpServerConfig;
 
 use crate::auth::{OAuthConfig, OAuthStore};
 use crate::router::AuthMode;
@@ -23,12 +23,17 @@ async fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "wled_mcp=info".parse().unwrap()),
         )
+        .with_writer(std::io::stderr)
+        .json()
+        .flatten_event(true)
+        .with_current_span(false)
+        .with_span_list(false)
         .init();
 
     let bind_addr: SocketAddr = std::env::var("BIND_ADDRESS")
-        .unwrap_or_else(|_| "0.0.0.0:3000".to_string())
+        .unwrap_or_else(|_| "0.0.0.0:8080".to_string())
         .parse()
-        .expect("BIND_ADDRESS must be a valid socket address (e.g. 0.0.0.0:3000)");
+        .expect("BIND_ADDRESS must be a valid socket address (e.g. 0.0.0.0:8080)");
 
     let auth_type = std::env::var("AUTH_TYPE")
         .unwrap_or_else(|_| "public".to_string())
