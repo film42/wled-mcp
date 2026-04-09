@@ -32,7 +32,7 @@ Authorization auto-approves (no user interaction). Access and refresh tokens exp
 | `OAUTH_CLIENT_ID` | Required when `AUTH_TYPE=oauth` | -- |
 | `OAUTH_CLIENT_SECRET` | Required when `AUTH_TYPE=oauth` | -- |
 | `OAUTH_ALLOWED_REDIRECT_URIS` | Comma-separated allowlist of redirect URIs. Patterns ending in `*` are prefix matches. | See below |
-| `BIND_ADDRESS` | Address to bind | `0.0.0.0:3000` |
+| `BIND_ADDRESS` | Address to bind | `0.0.0.0:8080` |
 | `RUST_LOG` | Log level | `wled_mcp=info` |
 
 Default `OAUTH_ALLOWED_REDIRECT_URIS`:
@@ -58,7 +58,6 @@ The server derives its public URL from request headers (`X-Forwarded-Proto`, `X-
 Contributions welcome! Here are some areas that could use attention:
 
 - **Docker image / `cargo install` support** — make it easier to run without cloning the repo and building from source.
-- **Batch tool calls** — MCP clients like Claude process tool calls sequentially, not in parallel. To control multiple controllers in a single round-trip, tools could accept a list of actions (e.g., `[{controller_id, state}, ...]`) instead of one at a time. This needs some design work around error handling and response shape.
 - **Rate limiting** — the OAuth endpoints have no built-in rate limiting. Fine behind a reverse proxy that handles it, but a standalone deployment could benefit from this.
 - **Effects** — experiment with having MCP set effects on patterns (it might be ready for prime time, but I haven't played with it).
 
